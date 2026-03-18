@@ -50,8 +50,9 @@ pub fn http_post_with_auth(host: &str, port: u16, path: &str, json: &str, api_ke
     let addr = format!("{}:{}", host, port);
     let mut stream = TcpStream::connect(&addr)
         .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    // Per-read timeout; total wait is handled by retry loop below
     stream
-        .set_read_timeout(Some(Duration::from_secs(300)))
+        .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
 
     let auth_header = match api_key {
@@ -67,10 +68,8 @@ pub fn http_post_with_auth(host: &str, port: u16, path: &str, json: &str, api_ke
         .write_all(request.as_bytes())
         .map_err(|e| format!("Failed to write request: {}", e))?;
 
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+    // Read with retry on WouldBlock/TimedOut — servers like ComfyUI can pause mid-response
+    let response = read_with_retry(&mut stream, 600)?;
 
     parse_http_response(&response)
 }
@@ -97,6 +96,37 @@ pub fn http_get_with_auth(host: &str, port: u16, path: &str, api_key: &str) -> R
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     parse_http_response(&response)
+}
+
+/// Read from a stream, retrying on WouldBlock/TimedOut up to max_secs total.
+fn read_with_retry(stream: &mut TcpStream, max_secs: u64) -> Result<String, String> {
+    let start = std::time::SystemTime::now();
+    let mut response = String::new();
+    let mut buf = [0u8; 8192];
+
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break, // Connection closed — we have the full response
+            Ok(n) => {
+                response.push_str(
+                    &String::from_utf8_lossy(&buf[..n])
+                );
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {
+                // Check total elapsed time
+                let elapsed = start.elapsed().unwrap_or_default().as_secs();
+                if elapsed >= max_secs {
+                    return Err(format!("Read timed out after {}s", elapsed));
+                }
+                // Got some data already and hit a pause — keep waiting
+                continue;
+            }
+            Err(e) => return Err(format!("Failed to read response: {}", e)),
+        }
+    }
+
+    Ok(response)
 }
 
 fn parse_http_response(response: &str) -> Result<(u16, String), String> {

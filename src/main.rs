@@ -65,6 +65,8 @@ fn main() {
 
     // Message store: group_id -> accumulated messages
     let mut store: HashMap<String, Vec<signal::Message>> = HashMap::new();
+    // Per-group model overrides: internal_id -> model name
+    let mut group_models: HashMap<String, String> = HashMap::new();
     let mut next_scheduled = scheduler::next_run_timestamp(config.schedule);
     let mut groups = groups;
     let mut last_group_refresh: u64 = 0;
@@ -149,24 +151,101 @@ fn main() {
 
             match cmd {
                 Command::Help => {
+                    let current_model = group_models.get(internal_id).unwrap_or(&config.model);
                     if let Err(e) = signal::send_message(
                         &config.signal_api_host,
                         config.signal_api_port,
                         &config.signal_phone,
                         send_id,
-                        "**Available commands:**\n\n\
-                         *@bot summarize* — Summarize all messages since the last summary\n\
-                         *@bot search <query>* — Search the web\n\
-                         *@bot imagine <prompt>* — Generate an image\n\
-                         *@bot help* — Show this help message",
+                        &format!(
+                            "**Available commands:**\n\n\
+                             *@bot summarize* — Summarize all messages since the last summary\n\
+                             *@bot search <query>* — Search the web\n\
+                             *@bot imagine <prompt>* — Generate an image\n\
+                             *@bot models* — List available LLMs\n\
+                             *@bot use <model>* — Switch LLM for this group\n\
+                             *@bot help* — Show this help message\n\n\
+                             _Current model: {}_",
+                            current_model
+                        ),
                     ) {
                         eprintln!("Failed to send help: {}", e);
                     }
                 }
+                Command::Models => {
+                    match webui::list_models(
+                        &config.webui_host,
+                        config.webui_port,
+                        &config.webui_api_key,
+                    ) {
+                        Ok(models) => {
+                            let current = group_models.get(internal_id).unwrap_or(&config.model);
+                            let list: String = models
+                                .iter()
+                                .map(|m| {
+                                    if m == current {
+                                        format!("  *{}* _(active)_", m)
+                                    } else {
+                                        format!("  {}", m)
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            let _ = signal::send_message(
+                                &config.signal_api_host,
+                                config.signal_api_port,
+                                &config.signal_phone,
+                                send_id,
+                                &format!("**Available models:**\n\n{}\n\n_Use: @bot use <model>_", list),
+                            );
+                        }
+                        Err(e) => {
+                            let _ = signal::send_message(
+                                &config.signal_api_host,
+                                config.signal_api_port,
+                                &config.signal_phone,
+                                send_id,
+                                &format!("Failed to list models: {}", e),
+                            );
+                        }
+                    }
+                }
+                Command::Use(model_name) => {
+                    // Validate the model exists
+                    let valid = match webui::list_models(
+                        &config.webui_host,
+                        config.webui_port,
+                        &config.webui_api_key,
+                    ) {
+                        Ok(models) => models.iter().any(|m| m.to_lowercase() == model_name.to_lowercase()),
+                        Err(_) => false,
+                    };
+
+                    if valid {
+                        println!("Model for '{}' set to '{}'", group_name, model_name);
+                        group_models.insert(internal_id.clone(), model_name.clone());
+                        let _ = signal::send_message(
+                            &config.signal_api_host,
+                            config.signal_api_port,
+                            &config.signal_phone,
+                            send_id,
+                            &format!("Model switched to *{}* for this group.", model_name),
+                        );
+                    } else {
+                        let _ = signal::send_message(
+                            &config.signal_api_host,
+                            config.signal_api_port,
+                            &config.signal_phone,
+                            send_id,
+                            &format!("Unknown model '{}'. Use *@bot models* to see available models.", model_name),
+                        );
+                    }
+                }
                 Command::Summarize => {
+                    let model = group_models.get(internal_id).unwrap_or(&config.model);
                     if let Some(stored) = store.remove(internal_id) {
                         println!("Triggered summarization for '{}'", group_name);
-                        summarize_and_send(&config, send_id, group_name, &stored);
+                        summarize_and_send(&config, send_id, group_name, &stored, model);
                     } else {
                         let _ = signal::send_message(
                             &config.signal_api_host,
@@ -178,8 +257,9 @@ fn main() {
                     }
                 }
                 Command::Search(query) => {
+                    let model = group_models.get(internal_id).unwrap_or(&config.model);
                     println!("Search requested in '{}': {}", group_name, query);
-                    handle_search(&config, send_id, query);
+                    handle_search(&config, send_id, query, model);
                 }
                 Command::Imagine(prompt) => {
                     println!("Image gen requested in '{}': {}", group_name, prompt);
@@ -207,7 +287,8 @@ fn main() {
                     let group = find_group(&groups, &internal_id);
                     let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
                     let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
-                    summarize_and_send(&config, send_id, group_name, &stored);
+                    let model = group_models.get(&internal_id).unwrap_or(&config.model);
+                    summarize_and_send(&config, send_id, group_name, &stored, model);
                 }
             }
             next_scheduled = scheduler::next_run_timestamp(config.schedule);
@@ -220,6 +301,8 @@ enum Command {
     Summarize,
     Search(String),
     Imagine(String),
+    Models,
+    Use(String),
     Help,
     Unknown,
 }
@@ -237,6 +320,10 @@ fn extract_command(text: &str) -> Command {
         Command::Summarize
     } else if lower.starts_with("help") {
         Command::Help
+    } else if lower.starts_with("models") || lower.starts_with("list-models") || lower.starts_with("list models") {
+        Command::Models
+    } else if let Some(model) = strip_command_prefix(&lower, cleaned, "use") {
+        Command::Use(model)
     } else if let Some(query) = strip_command_prefix(&lower, cleaned, "search") {
         Command::Search(query)
     } else if let Some(prompt) = strip_command_prefix(&lower, cleaned, "imagine") {
@@ -292,12 +379,13 @@ fn summarize_and_send(
     group_id: &str,
     group_name: &str,
     messages: &[signal::Message],
+    model: &str,
 ) {
     if messages.is_empty() {
         return;
     }
 
-    println!("Summarizing {} message(s) in '{}'...", messages.len(), group_name);
+    println!("Summarizing {} message(s) in '{}' with model '{}'", messages.len(), group_name, model);
     let transcript = format_transcript(messages);
     let user_prompt = format!(
         "Summarize these messages from the group \"{}\":\n\n{}",
@@ -308,7 +396,7 @@ fn summarize_and_send(
         &config.webui_host,
         config.webui_port,
         &config.webui_api_key,
-        &config.model,
+        model,
         &config.summary_prompt,
         &user_prompt,
     ) {
@@ -339,7 +427,7 @@ fn summarize_and_send(
     }
 }
 
-fn handle_search(config: &config::Config, group_id: &str, query: &str) {
+fn handle_search(config: &config::Config, group_id: &str, query: &str, model: &str) {
     // First, get search results
     let results = match webui::web_search(
         &config.webui_host,
@@ -371,7 +459,7 @@ fn handle_search(config: &config::Config, group_id: &str, query: &str) {
         &config.webui_host,
         config.webui_port,
         &config.webui_api_key,
-        &config.model,
+        model,
         "You are a helpful assistant. Summarize web search results into a clear, concise answer. Include relevant links when available.",
         &prompt,
     ) {

@@ -105,9 +105,22 @@ pub fn download_image(
         .map_err(|e| format!("Failed to write request: {}", e))?;
 
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+    let mut buf = [0u8; 8192];
+    let start = std::time::SystemTime::now();
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => response.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {
+                if start.elapsed().unwrap_or_default().as_secs() >= 120 {
+                    return Err("Image download timed out".to_string());
+                }
+                continue;
+            }
+            Err(e) => return Err(format!("Failed to read response: {}", e)),
+        }
+    }
 
     // Find the header/body separator
     let separator = b"\r\n\r\n";
@@ -129,6 +142,41 @@ pub fn download_image(
     }
 
     Ok(response[sep_pos + 4..].to_vec())
+}
+
+/// List available models from Open WebUI.
+/// Returns a list of (id, name) pairs, filtering out embedding models.
+pub fn list_models(
+    host: &str,
+    port: u16,
+    api_key: &str,
+) -> Result<Vec<String>, String> {
+    let (status, body) = http::http_get_with_auth(host, port, "/api/models", api_key)?;
+
+    if status != 200 {
+        return Err(format!("List models failed (HTTP {}): {}", status, body));
+    }
+
+    // Response: {"data": [{"id": "model-name", ...}, ...]}
+    // Find the "data" array
+    let data_start = body.find("\"data\"").ok_or("No data field in models response")?;
+    let after_data = &body[data_start..];
+    let arr_start = after_data.find('[').ok_or("No array in models response")?;
+    let arr_body = &after_data[arr_start..];
+
+    let objects = json::extract_array_objects(arr_body);
+    let mut models = Vec::new();
+
+    for obj in &objects {
+        if let Some(id) = json::extract_string(obj, "id") {
+            // Skip embedding models
+            if !id.contains("embed") {
+                models.push(id);
+            }
+        }
+    }
+
+    Ok(models)
 }
 
 fn format_search_results(body: &str) -> Result<String, String> {
