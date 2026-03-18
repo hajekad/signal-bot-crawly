@@ -15,37 +15,18 @@ services:
       retries: 5
       start_period: 30s
 
-  ollama:
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-
   signal-bot:
     build: .
     restart: unless-stopped
     environment:
       - SIGNAL_API_URL=http://signal-api:8080
-      - OLLAMA_API_URL=http://ollama:11434
+      - OPEN_WEBUI_URL=http://host.docker.internal:3000
+      - OPEN_WEBUI_API_KEY=  # Set your Open WebUI API key
       - OLLAMA_MODEL=gpt-oss:20b
       - SIGNAL_PHONE_NUMBER=+1234567890  # Replace with your Signal phone number
       - SCHEDULE=weekly
-      - SUMMARY_PROMPT=You are a concise summarizer of group chat messages. Given chat messages, produce a brief summary capturing key topics discussed, decisions made, action items, and important context. Use bullet points.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       signal-api:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
-
-volumes:
-  ollama_data:

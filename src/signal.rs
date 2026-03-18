@@ -118,6 +118,34 @@ fn has_bot_mention(envelope_json: &str, bot_id: &str) -> bool {
     mentions_section.contains(bot_id)
 }
 
+/// Send a message with a base64 image attachment to a group.
+pub fn send_image(
+    host: &str,
+    port: u16,
+    phone: &str,
+    group_id: &str,
+    caption: &str,
+    image_data: &[u8],
+) -> Result<(), String> {
+    use crate::base64;
+    let b64 = base64::encode(image_data);
+    let json_body = format!(
+        r#"{{"message":"{}","number":"{}","recipients":["{}"],"base64_attachments":["data:image/png;base64,{}"]}}"#,
+        json::escape(caption),
+        json::escape(phone),
+        json::escape(group_id),
+        b64,
+    );
+
+    let (status, body) = http::http_post(host, port, "/v2/send", &json_body)?;
+
+    if status != 201 && status != 200 {
+        return Err(format!("Send image failed (HTTP {}): {}", status, body));
+    }
+
+    Ok(())
+}
+
 /// Build the JSON body for a send request.
 pub fn build_send_body(phone: &str, group_id: &str, message: &str) -> String {
     format!(
