@@ -132,36 +132,39 @@ pub fn download_image(
 }
 
 fn format_search_results(body: &str) -> Result<String, String> {
-    // Open WebUI returns search results with "collection_name" and document contents
-    // Try to extract useful snippets from the response
+    // Response format: {"status":true,"collection_names":[...],"items":[{"link":"...","title":"...","snippet":"..."},...],"filenames":[...]}
     let mut results = String::new();
 
-    // Look for "source" and text content in the response
-    let objects = json::extract_array_objects(body);
-    if objects.is_empty() {
-        // Try extracting from nested structure
-        if let Some(collection) = json::extract_string(body, "collection_name") {
-            results.push_str(&format!("Source: {}\n", collection));
-        }
-        // Return raw body summary if we can't parse structured results
-        if results.is_empty() {
-            let truncated: String = body.chars().take(2000).collect();
-            return Ok(truncated);
-        }
-    }
+    // Extract items array
+    if let Some(items_start) = body.find("\"items\"") {
+        let after_items = &body[items_start..];
+        // Find the array within items
+        if let Some(arr_start) = after_items.find('[') {
+            let arr_body = &after_items[arr_start..];
+            let items = json::extract_array_objects(arr_body);
 
-    for (i, obj) in objects.iter().enumerate() {
-        if i >= 5 { break; } // Limit to top 5 results
-        if let Some(source) = json::extract_string(obj, "source") {
-            results.push_str(&format!("{}. {}\n", i + 1, source));
-        }
-        if let Some(content) = json::extract_string(obj, "page_content") {
-            let snippet: String = content.chars().take(200).collect();
-            results.push_str(&format!("   {}\n\n", snippet));
+            for (i, item) in items.iter().enumerate() {
+                if i >= 5 { break; }
+                let title = json::extract_string(item, "title").unwrap_or_default();
+                let snippet = json::extract_string(item, "snippet").unwrap_or_default();
+                let link = json::extract_string(item, "link").unwrap_or_default();
+
+                if !title.is_empty() {
+                    results.push_str(&format!("**{}. {}**\n", i + 1, title));
+                }
+                if !snippet.is_empty() {
+                    let truncated: String = snippet.chars().take(300).collect();
+                    results.push_str(&format!("{}\n", truncated));
+                }
+                if !link.is_empty() {
+                    results.push_str(&format!("{}\n\n", link));
+                }
+            }
         }
     }
 
     if results.is_empty() {
+        // Fallback: return truncated raw body
         Ok(body.chars().take(2000).collect())
     } else {
         Ok(results)
