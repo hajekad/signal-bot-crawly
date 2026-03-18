@@ -140,6 +140,10 @@ pub fn send_image(
     let (status, body) = http::http_post(host, port, "/v2/send", &json_body)?;
 
     if status != 201 && status != 200 {
+        if status == 400 && body.contains("Unregistered user") {
+            eprintln!("Warning: image sent but some recipients are unregistered");
+            return Ok(());
+        }
         return Err(format!("Send image failed (HTTP {}): {}", status, body));
     }
 
@@ -167,7 +171,12 @@ pub fn send_message(
     let json_body = build_send_body(phone, group_id, message);
     let (status, body) = http::http_post(host, port, "/v2/send", &json_body)?;
 
+    // 200/201 = full success, 400 with "Unregistered user" = partial success (some members left Signal)
     if status != 201 && status != 200 {
+        if status == 400 && body.contains("Unregistered user") {
+            eprintln!("Warning: message sent but some recipients are unregistered");
+            return Ok(());
+        }
         return Err(format!("Send message failed (HTTP {}): {}", status, body));
     }
 
