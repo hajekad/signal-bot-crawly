@@ -66,11 +66,33 @@ fn main() {
     // Message store: group_id -> accumulated messages
     let mut store: HashMap<String, Vec<signal::Message>> = HashMap::new();
     let mut next_scheduled = scheduler::next_run_timestamp(config.schedule);
+    let mut groups = groups;
+    let mut last_group_refresh: u64 = 0;
     println!("Next scheduled run at UNIX {}", next_scheduled);
 
     // Poll loop
     loop {
         thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+
+        // Refresh group list every 5 minutes
+        let now = scheduler::now_timestamp();
+        if now - last_group_refresh > 300 {
+            if let Ok(new_groups) = signal::list_groups(
+                &config.signal_api_host,
+                config.signal_api_port,
+                &config.signal_phone,
+            ) {
+                if !new_groups.is_empty() && new_groups.len() != groups.len() {
+                    println!(
+                        "Groups updated: {} -> {} group(s)",
+                        groups.len(),
+                        new_groups.len()
+                    );
+                    groups = new_groups;
+                }
+            }
+            last_group_refresh = now;
+        }
 
         // Poll for new messages
         let messages = match signal::receive_messages(
@@ -79,7 +101,12 @@ fn main() {
             &config.signal_phone,
             &bot_uuid,
         ) {
-            Ok(msgs) => msgs,
+            Ok(msgs) => {
+                if !msgs.is_empty() {
+                    println!("Received {} message(s)", msgs.len());
+                }
+                msgs
+            }
             Err(e) => {
                 eprintln!("Poll failed: {}", e);
                 continue;
@@ -102,13 +129,27 @@ fn main() {
 
         // Process commands
         for (internal_id, cmd) in &commands {
+            // Refresh groups if we don't recognize this one
+            if find_group(&groups, internal_id).is_none() {
+                if let Ok(new_groups) = signal::list_groups(
+                    &config.signal_api_host,
+                    config.signal_api_port,
+                    &config.signal_phone,
+                ) {
+                    if !new_groups.is_empty() {
+                        println!("Groups refreshed: {} group(s)", new_groups.len());
+                        groups = new_groups;
+                    }
+                }
+            }
             let group = find_group(&groups, internal_id);
             let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
             let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
+            println!("Command in '{}' (send_id: {})", group_name, send_id);
 
             match cmd {
                 Command::Help => {
-                    let _ = signal::send_message(
+                    if let Err(e) = signal::send_message(
                         &config.signal_api_host,
                         config.signal_api_port,
                         &config.signal_phone,
@@ -118,7 +159,9 @@ fn main() {
                          *@bot search <query>* — Search the web\n\
                          *@bot imagine <prompt>* — Generate an image\n\
                          *@bot help* — Show this help message",
-                    );
+                    ) {
+                        eprintln!("Failed to send help: {}", e);
+                    }
                 }
                 Command::Summarize => {
                     if let Some(stored) = store.remove(internal_id) {
