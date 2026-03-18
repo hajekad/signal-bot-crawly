@@ -84,17 +84,31 @@ fn main() {
             }
         };
 
-        // Sort messages into store and detect @bot mention triggers
-        let mut triggered_groups: Vec<String> = Vec::new();
+        // Sort messages into store and handle @bot commands
+        let mut summarize_groups: Vec<String> = Vec::new();
+        let mut help_groups: Vec<String> = Vec::new();
 
         for msg in messages {
             if let Some(group_id) = msg.group_id.clone() {
-                // Check for @bot mention trigger
                 if msg.mentions_bot && msg.sender != config.signal_phone {
-                    if !triggered_groups.contains(&group_id) {
-                        triggered_groups.push(group_id.clone());
+                    let cmd = extract_command(&msg.text);
+                    match cmd {
+                        Command::Summarize => {
+                            if !summarize_groups.contains(&group_id) {
+                                summarize_groups.push(group_id);
+                            }
+                        }
+                        Command::Help => {
+                            if !help_groups.contains(&group_id) {
+                                help_groups.push(group_id);
+                            }
+                        }
+                        Command::Unknown => {
+                            if !help_groups.contains(&group_id) {
+                                help_groups.push(group_id);
+                            }
+                        }
                     }
-                    // Don't store the trigger message itself in the summary
                     continue;
                 }
 
@@ -102,8 +116,23 @@ fn main() {
             }
         }
 
-        // Handle on-demand triggers
-        for internal_id in &triggered_groups {
+        // Handle help commands
+        for internal_id in &help_groups {
+            let group = find_group(&groups, internal_id);
+            let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
+            let _ = signal::send_message(
+                &config.signal_api_host,
+                config.signal_api_port,
+                &config.signal_phone,
+                send_id,
+                "**Available commands:**\n\n\
+                 *@bot summarize* — Summarize all messages since the last summary\n\
+                 *@bot help* — Show this help message",
+            );
+        }
+
+        // Handle summarize commands
+        for internal_id in &summarize_groups {
             let group = find_group(&groups, internal_id);
             let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
             let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
@@ -139,6 +168,32 @@ fn main() {
             next_scheduled = scheduler::next_run_timestamp(config.schedule);
             println!("Next scheduled run at UNIX {}", next_scheduled);
         }
+    }
+}
+
+enum Command {
+    Summarize,
+    Help,
+    Unknown,
+}
+
+/// Extract a command from a message that mentions the bot.
+/// The message text contains U+FFFC placeholders for mentions, so we strip those
+/// and look at the remaining text.
+fn extract_command(text: &str) -> Command {
+    let cleaned: String = text
+        .chars()
+        .filter(|c| *c != '\u{FFFC}')
+        .collect::<String>()
+        .trim()
+        .to_lowercase();
+
+    if cleaned.contains("summarize") || cleaned.contains("summary") {
+        Command::Summarize
+    } else if cleaned.contains("help") {
+        Command::Help
+    } else {
+        Command::Unknown
     }
 }
 
