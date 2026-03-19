@@ -10,8 +10,6 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
-const POLL_INTERVAL_SECS: u64 = 30;
-
 fn main() {
     println!("=== Signal Bot Crawly ===");
 
@@ -26,6 +24,7 @@ fn main() {
     println!("Phone: {}", config.signal_phone);
     println!("Schedule: {:?}", config.schedule);
     println!("Model: {}", config.model);
+    println!("Poll interval: {}s", config.poll_interval);
     println!("Open WebUI: {}:{}", config.webui_host, config.webui_port);
 
     // Get the bot's UUID for mention detection
@@ -76,7 +75,7 @@ fn main() {
 
     // Poll loop
     loop {
-        thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+        thread::sleep(Duration::from_secs(config.poll_interval));
 
         // Refresh group list every 5 minutes
         let now = scheduler::now_timestamp();
