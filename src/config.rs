@@ -12,6 +12,7 @@ pub struct Config {
     pub schedule: Schedule,
     pub summary_prompt: String,
     pub poll_interval: u64,
+    pub group_refresh_interval: u64,
     pub scheduled_summary_prompt: String,
     pub dm_prompt: String,
     pub dm_search_prompt: String,
@@ -175,6 +176,12 @@ impl Config {
         if poll_interval < 1 || poll_interval > 300 {
             return Err(format!("POLL_INTERVAL must be between 1 and 300 seconds, got {}", poll_interval));
         }
+
+        let group_refresh_interval = match env::var("GROUP_REFRESH_INTERVAL") {
+            Ok(val) => val.parse::<u64>().map_err(|_| format!("Invalid GROUP_REFRESH_INTERVAL '{}': must be a number", val))?,
+            Err(_) => 300,
+        };
+
         // Substitute {bot_name} in all prompts
         let summary_prompt = summary_prompt.replace("{bot_name}", &bot_name);
         let scheduled_summary_prompt = scheduled_summary_prompt.replace("{bot_name}", &bot_name);
@@ -195,6 +202,7 @@ impl Config {
             schedule,
             summary_prompt,
             poll_interval,
+            group_refresh_interval,
             scheduled_summary_prompt,
             dm_prompt,
             dm_search_prompt,

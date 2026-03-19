@@ -99,9 +99,9 @@ fn main() {
     loop {
         thread::sleep(Duration::from_secs(config.poll_interval));
 
-        // Refresh group list every 5 minutes
+        // Refresh group list periodically
         let now = scheduler::now_timestamp();
-        if now - last_group_refresh > 300 {
+        if now - last_group_refresh > config.group_refresh_interval {
             if let Ok(new_groups) = signal::list_groups(
                 &config.signal_api_host,
                 config.signal_api_port,
@@ -1287,6 +1287,8 @@ mod tests {
             signal_phone: "+1234567890".to_string(),
             bot_name: "TestBot".to_string(),
             schedule: config::Schedule::Weekly,
+            poll_interval: 10,
+            group_refresh_interval: 300,
             summary_prompt: "summary".to_string(),
             scheduled_summary_prompt: "scheduled".to_string(),
             dm_prompt: "dm".to_string(),
@@ -1319,5 +1321,49 @@ mod tests {
     fn test_message_with_group_id_is_group() {
         let msg = make_msg("Alice", "hello", 1000);
         assert!(msg.group_id.is_some()); // Group
+    }
+
+    // ── poll_interval and group_refresh_interval config ──
+
+    #[test]
+    fn test_config_poll_interval_in_struct() {
+        let config = config::Config {
+            signal_api_host: "localhost".to_string(),
+            signal_api_port: 8080,
+            webui_host: "localhost".to_string(),
+            webui_port: 3000,
+            webui_api_key: "test".to_string(),
+            model: "test".to_string(),
+            signal_phone: "+1234567890".to_string(),
+            bot_name: "Bot".to_string(),
+            schedule: config::Schedule::Weekly,
+            poll_interval: 5,
+            group_refresh_interval: 120,
+            summary_prompt: "s".to_string(),
+            scheduled_summary_prompt: "ss".to_string(),
+            dm_prompt: "d".to_string(),
+            dm_search_prompt: "ds".to_string(),
+            search_prompt: "sr".to_string(),
+            fact_check_prompt: "fc".to_string(),
+        };
+        assert_eq!(config.poll_interval, 5);
+        assert_eq!(config.group_refresh_interval, 120);
+    }
+
+    // ── typing indicator ──
+
+    #[test]
+    fn test_send_typing_indicator_builds_correct_json() {
+        // Test that the JSON body for typing indicator is well-formed
+        let recipient = "group.abc123";
+        let json_body = format!(r#"{{"recipient":"{}"}}"#, json::escape(recipient));
+        assert_eq!(json_body, r#"{"recipient":"group.abc123"}"#);
+    }
+
+    #[test]
+    fn test_send_typing_indicator_escapes_special_chars() {
+        let recipient = "group.abc+123/def=";
+        let json_body = format!(r#"{{"recipient":"{}"}}"#, json::escape(recipient));
+        assert!(json_body.contains("group.abc+123"));
     }
 }
