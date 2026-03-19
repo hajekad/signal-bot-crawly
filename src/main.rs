@@ -119,18 +119,41 @@ fn main() {
 
         // Collect commands and store regular messages
         let mut commands: Vec<(String, Command)> = Vec::new();
+        // DM conversations: sender -> chat message
+        let mut dm_chats: Vec<(String, String, signal::Message)> = Vec::new();
 
         for msg in messages {
+            // Skip bot's own messages
+            if msg.sender == config.signal_phone {
+                continue;
+            }
+
             // Archive every message for reply chain lookups
             archive.insert(msg.timestamp, msg.clone());
 
             if let Some(group_id) = msg.group_id.clone() {
-                if msg.mentions_bot && msg.sender != config.signal_phone {
+                // Group message — require @mention for commands
+                if msg.mentions_bot {
                     let cmd = extract_command(&msg.text, &msg.quote);
                     commands.push((group_id, cmd));
                     continue;
                 }
                 store.entry(group_id).or_default().push(msg);
+            } else {
+                // Direct message — no @mention needed
+                let sender = msg.sender.clone();
+                let text = msg.text.clone();
+                let cmd = extract_command(&text, &msg.quote);
+                match cmd {
+                    Command::Unknown => {
+                        // Not a command — treat as LLM chat
+                        dm_chats.push((sender, text, msg));
+                    }
+                    _ => {
+                        // It's a command — route it, reply to sender
+                        commands.push((sender, cmd));
+                    }
+                }
             }
         }
 
@@ -143,10 +166,12 @@ fn main() {
             }
         }
 
-        // Process commands
-        for (internal_id, cmd) in &commands {
-            // Refresh groups if we don't recognize this one
-            if find_group(&groups, internal_id).is_none() {
+        // Process commands (from both groups and DMs)
+        for (target_id, cmd) in &commands {
+            // Refresh groups if target looks like an unknown group ID
+            if find_group(&groups, target_id).is_none()
+                && (target_id.contains('=') || target_id.starts_with("group."))
+            {
                 if let Ok(new_groups) = signal::list_groups(
                     &config.signal_api_host,
                     config.signal_api_port,
@@ -158,14 +183,27 @@ fn main() {
                     }
                 }
             }
-            let group = find_group(&groups, internal_id);
-            let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
-            let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
-            println!("Command in '{}' (send_id: {})", group_name, send_id);
+
+            let group = find_group(&groups, target_id);
+            let send_id = group.map(|g| g.id.as_str()).unwrap_or(target_id.as_str());
+            let context_name = group.map(|g| g.name.as_str()).unwrap_or("DM");
+            println!("Command in '{}' (send_id: {})", context_name, send_id);
 
             match cmd {
                 Command::Help => {
-                    let current_model = group_models.get(internal_id).unwrap_or(&config.model);
+                    let current_model = group_models.get(target_id).unwrap_or(&config.model);
+                    let is_dm = group.is_none();
+                    let prefix = if is_dm { "" } else { "@bot " };
+                    let fact_check_line = if is_dm {
+                        "".to_string()
+                    } else {
+                        format!("*Reply + @bot is this true?* — Fact-check a message\n")
+                    };
+                    let dm_note = if is_dm {
+                        "\n_In DMs, just type the command directly. Or send any message to chat._"
+                    } else {
+                        ""
+                    };
                     if let Err(e) = signal::send_message(
                         &config.signal_api_host,
                         config.signal_api_port,
@@ -173,15 +211,17 @@ fn main() {
                         send_id,
                         &format!(
                             "**Available commands:**\n\n\
-                             *@bot summarize* — Summarize all messages since the last summary\n\
-                             *@bot search <query>* — Search the web\n\
-                             *@bot imagine <prompt>* — Generate an image\n\
-                             *@bot models* — List available LLMs\n\
-                             *@bot use <model>* — Switch LLM for this group\n\
-                             *Reply to a message + @bot is this true?* — Fact-check that message\n\
-                             *@bot help* — Show this help message\n\n\
-                             _Current model: {}_",
-                            current_model
+                             *{}summarize* — Summarize messages\n\
+                             *{}search <query>* — Search the web\n\
+                             *{}imagine <prompt>* — Generate an image\n\
+                             *{}models* — List available LLMs\n\
+                             *{}use <model>* — Switch LLM\n\
+                             {}\
+                             *{}help* — Show this help message\n\n\
+                             _Current model: {}_{}",
+                            prefix, prefix, prefix, prefix, prefix,
+                            fact_check_line,
+                            prefix, current_model, dm_note
                         ),
                     ) {
                         eprintln!("Failed to send help: {}", e);
@@ -194,7 +234,7 @@ fn main() {
                         &config.webui_api_key,
                     ) {
                         Ok(models) => {
-                            let current = group_models.get(internal_id).unwrap_or(&config.model);
+                            let current = group_models.get(target_id).unwrap_or(&config.model);
                             let list: String = models
                                 .iter()
                                 .map(|m| {
@@ -237,8 +277,8 @@ fn main() {
                     };
 
                     if valid {
-                        println!("Model for '{}' set to '{}'", group_name, model_name);
-                        group_models.insert(internal_id.clone(), model_name.clone());
+                        println!("Model for '{}' set to '{}'", context_name, model_name);
+                        group_models.insert(target_id.clone(), model_name.clone());
                         let _ = signal::send_message(
                             &config.signal_api_host,
                             config.signal_api_port,
@@ -257,10 +297,10 @@ fn main() {
                     }
                 }
                 Command::Summarize => {
-                    let model = group_models.get(internal_id).unwrap_or(&config.model);
-                    if let Some(stored) = store.remove(internal_id) {
-                        println!("Triggered summarization for '{}'", group_name);
-                        summarize_and_send(&config, send_id, group_name, &stored, model, &archive);
+                    let model = group_models.get(target_id).unwrap_or(&config.model);
+                    if let Some(stored) = store.remove(target_id) {
+                        println!("Triggered summarization for '{}'", context_name);
+                        summarize_and_send(&config, send_id, context_name, &stored, model, &archive);
                     } else {
                         let _ = signal::send_message(
                             &config.signal_api_host,
@@ -272,18 +312,18 @@ fn main() {
                     }
                 }
                 Command::Search(query) => {
-                    let model = group_models.get(internal_id).unwrap_or(&config.model);
-                    println!("Search requested in '{}': {}", group_name, query);
+                    let model = group_models.get(target_id).unwrap_or(&config.model);
+                    println!("Search requested in '{}': {}", context_name, query);
                     handle_search(&config, send_id, query, model);
                 }
                 Command::Imagine(prompt) => {
-                    println!("Image gen requested in '{}': {}", group_name, prompt);
+                    println!("Image gen requested in '{}': {}", context_name, prompt);
                     handle_imagine(&config, send_id, prompt);
                 }
                 Command::FactCheck { claim, ref quote } => {
-                    let model = group_models.get(internal_id).unwrap_or(&config.model);
+                    let model = group_models.get(target_id).unwrap_or(&config.model);
                     let chain = build_reply_chain(quote, &archive, 50);
-                    println!("Fact-check requested in '{}' (chain: {} msgs): {}", group_name, chain.len(), claim);
+                    println!("Fact-check requested in '{}' (chain: {} msgs): {}", context_name, chain.len(), claim);
                     handle_fact_check(&config, send_id, &chain, model);
                 }
                 Command::FactCheckUsage => {
@@ -302,6 +342,40 @@ fn main() {
                         &config.signal_phone,
                         send_id,
                         "Unknown command. Tag me with *help* to see available commands.",
+                    );
+                }
+            }
+        }
+
+        // Handle DM chats — reply with LLM
+        for (sender, text, _msg) in &dm_chats {
+            println!("DM from '{}': {}", sender, text);
+            let model = group_models.get(sender).unwrap_or(&config.model);
+            match webui::chat(
+                &config.webui_host,
+                config.webui_port,
+                &config.webui_api_key,
+                model,
+                "You are a helpful assistant in a private Signal chat. Be concise and friendly.",
+                text,
+            ) {
+                Ok(reply) => {
+                    let _ = signal::send_message(
+                        &config.signal_api_host,
+                        config.signal_api_port,
+                        &config.signal_phone,
+                        sender,
+                        &reply,
+                    );
+                }
+                Err(e) => {
+                    eprintln!("DM chat failed for '{}': {}", sender, e);
+                    let _ = signal::send_message(
+                        &config.signal_api_host,
+                        config.signal_api_port,
+                        &config.signal_phone,
+                        sender,
+                        &format!("Sorry, I couldn't process that: {}", e),
                     );
                 }
             }
