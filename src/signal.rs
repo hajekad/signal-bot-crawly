@@ -124,13 +124,22 @@ fn extract_quote(envelope_json: &str) -> Option<Quote> {
     let brace_idx = after_quote.find('{')?;
     let quote_body = &after_quote[brace_idx..];
 
-    // Find matching closing brace
+    // Find matching closing brace (string-aware to handle braces inside JSON values)
+    let bytes = quote_body.as_bytes();
     let mut depth = 0;
     let mut end = 0;
-    for (i, c) in quote_body.chars().enumerate() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
+    let mut in_string = false;
+    let mut escape_next = false;
+    for i in 0..bytes.len() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match bytes[i] {
+            b'\\' if in_string => escape_next = true,
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
                 depth -= 1;
                 if depth == 0 {
                     end = i;

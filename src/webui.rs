@@ -116,6 +116,7 @@ pub fn download_image(
                 if start.elapsed().unwrap_or_default().as_secs() >= 120 {
                     return Err("Image download timed out".to_string());
                 }
+                std::thread::sleep(Duration::from_millis(50));
                 continue;
             }
             Err(e) => return Err(format!("Failed to read response: {}", e)),
@@ -141,7 +142,17 @@ pub fn download_image(
         return Err(format!("Image download failed (HTTP {})", status));
     }
 
-    Ok(response[sep_pos + 4..].to_vec())
+    let body = &response[sep_pos + 4..];
+    let is_chunked = headers
+        .lines()
+        .any(|l| l.to_lowercase().starts_with("transfer-encoding:")
+             && l.to_lowercase().contains("chunked"));
+
+    if is_chunked {
+        http::decode_chunked(body)
+    } else {
+        Ok(body.to_vec())
+    }
 }
 
 /// List available models from Open WebUI.
