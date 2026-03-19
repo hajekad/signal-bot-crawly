@@ -3,6 +3,7 @@ mod config;
 mod crypto;
 mod http;
 mod json;
+mod memory;
 mod scheduler;
 mod signal;
 mod store;
@@ -113,6 +114,8 @@ fn main() {
     println!("State store: {}", store_path);
     // Message archive: timestamp -> message (for following reply chains)
     let mut archive: HashMap<i64, signal::Message> = HashMap::new();
+    // Ephemeral conversation sessions — backed by Open WebUI chats, wiped on restart
+    let mut sessions = memory::SessionManager::new();
     let mut next_scheduled = scheduler::next_run_timestamp(config.schedule);
     let mut groups = groups;
     let mut last_group_refresh: u64 = 0;
@@ -261,9 +264,13 @@ fn main() {
                              *{}imagine <prompt>* — Generate an image\n\
                              *{}models* — List available LLMs\n\
                              *{}use <model>* — Switch LLM\n\
+                             *{}stay* — Join the conversation and listen\n\
+                             *{}shut* — Leave and wipe session memory\n\
                              {}\
                              *{}help* — Show this help message\n\n\
                              _Current model: {}_{}",
+                            prefix,
+                            prefix,
                             prefix,
                             prefix,
                             prefix,
@@ -412,6 +419,105 @@ fn main() {
                         "To fact-check, *reply* to the message you want to check and tag me with exactly: *@bot is this true?*",
                     );
                 }
+                Command::Stay => {
+                    if sessions.is_stay_active(target_id) {
+                        let _ = signal::send_message(
+                            &config.signal_api_host,
+                            config.signal_api_port,
+                            &config.signal_phone,
+                            send_id,
+                            "I'm already here. Use *@bot shut* to make me leave.",
+                        );
+                    } else {
+                        let model = group_models.get(target_id).unwrap_or(config.model.as_str());
+                        if sessions
+                            .start_stay(
+                                target_id,
+                                model,
+                                &config.webui_host,
+                                config.webui_port,
+                                &config.webui_api_key,
+                            )
+                            .is_some()
+                        {
+                            // Seed with recent messages from archive
+                            let recent: String = archive
+                                .values()
+                                .filter(|m| m.group_id.as_deref() == Some(target_id))
+                                .collect::<Vec<_>>()
+                                .iter()
+                                .rev()
+                                .take(100)
+                                .rev()
+                                .map(|m| {
+                                    let name =
+                                        m.sender_name.as_deref().unwrap_or(m.sender.as_str());
+                                    format!("{}: {}", name, m.text)
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+
+                            if let Some(session) = sessions.stay_sessions.get_mut(target_id) {
+                                if !recent.is_empty() {
+                                    session.messages.push(memory::ChatMessage {
+                                        role: "user".to_string(),
+                                        content: format!(
+                                            "Here is the recent conversation history for context:\n{}",
+                                            recent
+                                        ),
+                                    });
+                                    session.messages.push(memory::ChatMessage {
+                                        role: "assistant".to_string(),
+                                        content: "Got it, I've reviewed the conversation. I'll listen and only speak when I can genuinely help.".to_string(),
+                                    });
+                                }
+                            }
+
+                            println!("Stay mode activated in '{}'", context_name);
+                            let _ = signal::send_message(
+                                &config.signal_api_host,
+                                config.signal_api_port,
+                                &config.signal_phone,
+                                send_id,
+                                "I'm listening. I'll chime in when I have something useful to add. Use *@bot shut* to dismiss me.",
+                            );
+                        } else {
+                            let _ = signal::send_message(
+                                &config.signal_api_host,
+                                config.signal_api_port,
+                                &config.signal_phone,
+                                send_id,
+                                "Failed to start stay session.",
+                            );
+                        }
+                    }
+                }
+                Command::Shut => {
+                    if sessions.is_stay_active(target_id) {
+                        sessions.end_stay(
+                            target_id,
+                            &config.webui_host,
+                            config.webui_port,
+                            &config.webui_api_key,
+                        );
+                        println!("Stay mode deactivated in '{}'", context_name);
+                        let _ = signal::send_message(
+                            &config.signal_api_host,
+                            config.signal_api_port,
+                            &config.signal_phone,
+                            send_id,
+                            "Session ended. All conversation memory wiped.",
+                        );
+                    } else {
+                        let _ = signal::send_message(
+                            &config.signal_api_host,
+                            config.signal_api_port,
+                            &config.signal_phone,
+                            send_id,
+                            "I'm not in stay mode. Use *@bot stay* first.",
+                        );
+                    }
+                }
                 Command::Unknown => {
                     let _ = signal::send_message(
                         &config.signal_api_host,
@@ -424,26 +530,96 @@ fn main() {
             }
         }
 
-        // Handle DM chats — reply with LLM
+        // Handle stay mode — check if bot should respond in active groups
+        {
+            let stay_group_ids: Vec<String> = sessions.stay_sessions.keys().cloned().collect();
+            for group_id in stay_group_ids {
+                // Collect new messages for this group from the store
+                let new_msgs: Vec<String> = store
+                    .get(&group_id)
+                    .map(|msgs| {
+                        msgs.iter()
+                            .map(|m| {
+                                let name = m.sender_name.as_deref().unwrap_or(m.sender.as_str());
+                                format!("{}: {}", name, m.text)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if new_msgs.is_empty() {
+                    continue;
+                }
+
+                let recent = new_msgs.join("\n");
+
+                if let Some(session) = sessions.stay_sessions.get_mut(&group_id) {
+                    match memory::should_respond(
+                        session,
+                        &recent,
+                        &config.webui_host,
+                        config.webui_port,
+                        &config.webui_api_key,
+                    ) {
+                        Ok(Some(response)) => {
+                            let group = find_group(&groups, &group_id);
+                            let send_id = group.map(|g| g.id.as_str()).unwrap_or(group_id.as_str());
+                            let _ = signal::send_message(
+                                &config.signal_api_host,
+                                config.signal_api_port,
+                                &config.signal_phone,
+                                send_id,
+                                &response,
+                            );
+                        }
+                        Ok(None) => {} // Silent — good
+                        Err(e) => eprintln!("Stay mode error: {}", e),
+                    }
+                }
+            }
+        }
+
+        // Handle DM chats — use Open WebUI sessions for conversation memory
         for (sender, text, _msg) in &dm_chats {
             println!("DM from '{}': {}", sender, text);
             send_typing(&config, sender);
             let model = group_models.get(sender).unwrap_or(config.model.as_str());
-            match webui::chat(
+
+            let reply = if let Some(session) = sessions.get_or_create_dm(
+                sender,
+                model,
                 &config.webui_host,
                 config.webui_port,
                 &config.webui_api_key,
-                model,
-                &config.dm_prompt,
-                text,
             ) {
-                Ok(reply) => {
+                memory::chat_in_session(
+                    session,
+                    text,
+                    &config.dm_prompt,
+                    &config.webui_host,
+                    config.webui_port,
+                    &config.webui_api_key,
+                )
+            } else {
+                // Fallback to stateless chat if session creation fails
+                webui::chat(
+                    &config.webui_host,
+                    config.webui_port,
+                    &config.webui_api_key,
+                    model,
+                    &config.dm_prompt,
+                    text,
+                )
+            };
+
+            match reply {
+                Ok(response) => {
                     let _ = signal::send_message(
                         &config.signal_api_host,
                         config.signal_api_port,
                         &config.signal_phone,
                         sender,
-                        &reply,
+                        &response,
                     );
                 }
                 Err(e) => {
@@ -497,6 +673,8 @@ enum Command {
     FactCheckUsage,
     Models,
     Use(String),
+    Stay,
+    Shut,
     Help,
     Unknown,
 }
@@ -534,6 +712,10 @@ fn extract_command(text: &str, quote: &Option<signal::Quote>) -> Command {
         || lower.starts_with("list models")
     {
         Command::Models
+    } else if lower == "stay" || lower == "join" {
+        Command::Stay
+    } else if lower == "shut" || lower == "leave" || lower == "stop" {
+        Command::Shut
     } else if let Some(model) = strip_command_prefix(&lower, cleaned, "use") {
         Command::Use(model)
     } else if let Some(query) = strip_command_prefix(&lower, cleaned, "search") {
