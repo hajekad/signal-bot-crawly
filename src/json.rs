@@ -52,7 +52,9 @@ pub fn extract_number(json: &str, key: &str) -> Option<i64> {
             let after_key = &json[abs_idx + pattern.len()..];
             if let Some(after_colon) = after_key.trim_start().strip_prefix(':') {
                 let trimmed = after_colon.trim_start();
-                let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(trimmed.len());
+                let end = trimmed
+                    .find(|c: char| !c.is_ascii_digit() && c != '-')
+                    .unwrap_or(trimmed.len());
                 if end > 0 {
                     if let Ok(n) = trimmed[..end].parse() {
                         return Some(n);
@@ -197,7 +199,10 @@ mod tests {
     #[test]
     fn test_extract_string() {
         let json = r#"{"name": "Family Chat", "id": "group.abc123"}"#;
-        assert_eq!(extract_string(json, "name"), Some("Family Chat".to_string()));
+        assert_eq!(
+            extract_string(json, "name"),
+            Some("Family Chat".to_string())
+        );
         assert_eq!(extract_string(json, "id"), Some("group.abc123".to_string()));
         assert_eq!(extract_string(json, "missing"), None);
     }
@@ -349,21 +354,42 @@ mod tests {
         assert_eq!(objects.len(), 2);
 
         // First message
-        assert_eq!(extract_string(&objects[0], "message"), Some("Hello there!".to_string()));
-        assert_eq!(extract_string(&objects[0], "source"), Some("+1987654321".to_string()));
-        assert_eq!(extract_number(&objects[0], "timestamp"), Some(1612041718367));
-        assert_eq!(extract_string(&objects[0], "groupId"), Some("group.abc123".to_string()));
+        assert_eq!(
+            extract_string(&objects[0], "message"),
+            Some("Hello there!".to_string())
+        );
+        assert_eq!(
+            extract_string(&objects[0], "source"),
+            Some("+1987654321".to_string())
+        );
+        assert_eq!(
+            extract_number(&objects[0], "timestamp"),
+            Some(1612041718367)
+        );
+        assert_eq!(
+            extract_string(&objects[0], "groupId"),
+            Some("group.abc123".to_string())
+        );
 
         // Second message
-        assert_eq!(extract_string(&objects[1], "message"), Some("Anyone free for lunch?".to_string()));
-        assert_eq!(extract_string(&objects[1], "source"), Some("+1555000111".to_string()));
+        assert_eq!(
+            extract_string(&objects[1], "message"),
+            Some("Anyone free for lunch?".to_string())
+        );
+        assert_eq!(
+            extract_string(&objects[1], "source"),
+            Some("+1555000111".to_string())
+        );
     }
 
     #[test]
     fn test_extract_string_key_not_substring_match() {
         // "id" must not match "groupId"
         let json = r#"{"groupId": "group.abc123", "id": "standalone-id"}"#;
-        assert_eq!(extract_string(json, "id"), Some("standalone-id".to_string()));
+        assert_eq!(
+            extract_string(json, "id"),
+            Some("standalone-id".to_string())
+        );
     }
 
     #[test]

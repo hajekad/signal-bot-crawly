@@ -5,7 +5,6 @@
 ///
 /// File format: 12-byte nonce + ChaCha20-encrypted UTF-8 lines of "key=value".
 /// The file is rewritten atomically on every save.
-
 use crate::crypto;
 use std::collections::HashMap;
 use std::fs;
@@ -45,6 +44,7 @@ impl EncryptedStore {
     }
 
     /// Remove a key and persist.
+    #[allow(dead_code)]
     pub fn remove(&mut self, key: &str) {
         self.data.remove(key);
         if let Err(e) = self.save() {
@@ -122,8 +122,7 @@ impl EncryptedStore {
                 .map_err(|e| format!("Failed to set permissions: {}", e))?;
         }
 
-        fs::rename(&tmp_path, &self.path)
-            .map_err(|e| format!("Failed to rename store: {}", e))?;
+        fs::rename(&tmp_path, &self.path).map_err(|e| format!("Failed to rename store: {}", e))?;
 
         Ok(())
     }

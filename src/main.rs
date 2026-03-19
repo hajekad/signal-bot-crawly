@@ -33,12 +33,20 @@ fn main() {
             println!("Bot name from Signal: {}", name);
             config.bot_name = name;
             // Re-substitute in prompts
-            config.summary_prompt = config.summary_prompt.replace("{bot_name}", &config.bot_name);
-            config.scheduled_summary_prompt = config.scheduled_summary_prompt.replace("{bot_name}", &config.bot_name);
+            config.summary_prompt = config
+                .summary_prompt
+                .replace("{bot_name}", &config.bot_name);
+            config.scheduled_summary_prompt = config
+                .scheduled_summary_prompt
+                .replace("{bot_name}", &config.bot_name);
             config.dm_prompt = config.dm_prompt.replace("{bot_name}", &config.bot_name);
-            config.dm_search_prompt = config.dm_search_prompt.replace("{bot_name}", &config.bot_name);
+            config.dm_search_prompt = config
+                .dm_search_prompt
+                .replace("{bot_name}", &config.bot_name);
             config.search_prompt = config.search_prompt.replace("{bot_name}", &config.bot_name);
-            config.fact_check_prompt = config.fact_check_prompt.replace("{bot_name}", &config.bot_name);
+            config.fact_check_prompt = config
+                .fact_check_prompt
+                .replace("{bot_name}", &config.bot_name);
         } else {
             config.bot_name = "Crawly".to_string();
         }
@@ -62,7 +70,10 @@ fn main() {
             uuid
         }
         Err(e) => {
-            eprintln!("Warning: could not get bot UUID ({}), falling back to phone for mention detection", e);
+            eprintln!(
+                "Warning: could not get bot UUID ({}), falling back to phone for mention detection",
+                e
+            );
             config.signal_phone.clone()
         }
     };
@@ -81,7 +92,12 @@ fn main() {
 
     // Initial receive to clear old messages
     println!("Performing initial receive to clear old messages...");
-    match signal::receive_messages(&config.signal_api_host, config.signal_api_port, &config.signal_phone, &bot_uuid) {
+    match signal::receive_messages(
+        &config.signal_api_host,
+        config.signal_api_port,
+        &config.signal_phone,
+        &bot_uuid,
+    ) {
         Ok(msgs) => println!("Cleared {} old message(s)", msgs.len()),
         Err(e) => eprintln!("Warning: initial receive failed: {}", e),
     }
@@ -89,11 +105,10 @@ fn main() {
     // Message store: group_id -> accumulated messages
     let mut store: HashMap<String, Vec<signal::Message>> = HashMap::new();
     // Per-group model overrides: encrypted persistent store
-    let store_path = std::env::var("BOT_STORE_PATH")
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-            format!("{}/.config/signal-bot-crawly/state.enc", home)
-        });
+    let store_path = std::env::var("BOT_STORE_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.config/signal-bot-crawly/state.enc", home)
+    });
     let mut group_models = store::EncryptedStore::open(&store_path, &config.webui_api_key);
     println!("State store: {}", store_path);
     // Message archive: timestamp -> message (for following reply chains)
@@ -220,13 +235,14 @@ fn main() {
 
             match cmd {
                 Command::Help => {
-                    let current_model = group_models.get(target_id).unwrap_or(config.model.as_str());
+                    let current_model =
+                        group_models.get(target_id).unwrap_or(config.model.as_str());
                     let is_dm = group.is_none();
                     let prefix = if is_dm { "" } else { "@bot " };
                     let fact_check_line = if is_dm {
                         "".to_string()
                     } else {
-                        format!("*Reply + @bot is this true?* — Fact-check a message\n")
+                        "*Reply + @bot is this true?* — Fact-check a message\n".to_string()
                     };
                     let dm_note = if is_dm {
                         "\n_In DMs, just type the command directly. Or send any message to chat._"
@@ -248,9 +264,15 @@ fn main() {
                              {}\
                              *{}help* — Show this help message\n\n\
                              _Current model: {}_{}",
-                            prefix, prefix, prefix, prefix, prefix,
+                            prefix,
+                            prefix,
+                            prefix,
+                            prefix,
+                            prefix,
                             fact_check_line,
-                            prefix, current_model, dm_note
+                            prefix,
+                            current_model,
+                            dm_note
                         ),
                     ) {
                         eprintln!("Failed to send help: {}", e);
@@ -263,7 +285,8 @@ fn main() {
                         &config.webui_api_key,
                     ) {
                         Ok(models) => {
-                            let current = group_models.get(target_id).unwrap_or(config.model.as_str());
+                            let current =
+                                group_models.get(target_id).unwrap_or(config.model.as_str());
                             let list: String = models
                                 .iter()
                                 .map(|m| {
@@ -280,7 +303,10 @@ fn main() {
                                 config.signal_api_port,
                                 &config.signal_phone,
                                 send_id,
-                                &format!("**Available models:**\n\n{}\n\n_Use: @bot use <model>_", list),
+                                &format!(
+                                    "**Available models:**\n\n{}\n\n_Use: @bot use <model>_",
+                                    list
+                                ),
                             );
                         }
                         Err(e) => {
@@ -301,7 +327,9 @@ fn main() {
                         config.webui_port,
                         &config.webui_api_key,
                     ) {
-                        Ok(models) => models.iter().any(|m| m.to_lowercase() == model_name.to_lowercase()),
+                        Ok(models) => models
+                            .iter()
+                            .any(|m| m.to_lowercase() == model_name.to_lowercase()),
                         Err(_) => false,
                     };
 
@@ -321,7 +349,10 @@ fn main() {
                             config.signal_api_port,
                             &config.signal_phone,
                             send_id,
-                            &format!("Unknown model '{}'. Use *@bot models* to see available models.", model_name),
+                            &format!(
+                                "Unknown model '{}'. Use *@bot models* to see available models.",
+                                model_name
+                            ),
                         );
                     }
                 }
@@ -330,7 +361,15 @@ fn main() {
                     if let Some(stored) = store.remove(target_id) {
                         send_typing(&config, send_id);
                         println!("Triggered summarization for '{}'", context_name);
-                        summarize_and_send(&config, send_id, context_name, &stored, model, &config.summary_prompt, &archive);
+                        summarize_and_send(
+                            &config,
+                            send_id,
+                            context_name,
+                            &stored,
+                            model,
+                            &config.summary_prompt,
+                            &archive,
+                        );
                     } else {
                         let _ = signal::send_message(
                             &config.signal_api_host,
@@ -356,7 +395,12 @@ fn main() {
                     let model = group_models.get(target_id).unwrap_or(config.model.as_str());
                     send_typing(&config, send_id);
                     let chain = build_reply_chain(quote, &archive, 50);
-                    println!("Fact-check requested in '{}' (chain: {} msgs): {}", context_name, chain.len(), claim);
+                    println!(
+                        "Fact-check requested in '{}' (chain: {} msgs): {}",
+                        context_name,
+                        chain.len(),
+                        claim
+                    );
                     handle_fact_check(&config, send_id, &chain, model);
                 }
                 Command::FactCheckUsage => {
@@ -425,8 +469,18 @@ fn main() {
                     let group = find_group(&groups, &internal_id);
                     let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
                     let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
-                    let model = group_models.get(&internal_id).unwrap_or(config.model.as_str());
-                    summarize_and_send(&config, send_id, group_name, &stored, model, &config.scheduled_summary_prompt, &archive);
+                    let model = group_models
+                        .get(&internal_id)
+                        .unwrap_or(config.model.as_str());
+                    summarize_and_send(
+                        &config,
+                        send_id,
+                        group_name,
+                        &stored,
+                        model,
+                        &config.scheduled_summary_prompt,
+                        &archive,
+                    );
                 }
             }
             next_scheduled = scheduler::next_run_timestamp(config.schedule);
@@ -463,7 +517,10 @@ fn extract_command(text: &str, quote: &Option<signal::Quote>) -> Command {
     // Fact-check: requires both a reply AND a trigger phrase
     if is_fact_check_phrase(&lower) {
         return match quote {
-            Some(q) => Command::FactCheck { claim: q.text.clone(), quote: q.clone() },
+            Some(q) => Command::FactCheck {
+                claim: q.text.clone(),
+                quote: q.clone(),
+            },
             None => Command::FactCheckUsage,
         };
     }
@@ -472,7 +529,10 @@ fn extract_command(text: &str, quote: &Option<signal::Quote>) -> Command {
         Command::Summarize
     } else if lower.starts_with("help") {
         Command::Help
-    } else if lower.starts_with("models") || lower.starts_with("list-models") || lower.starts_with("list models") {
+    } else if lower.starts_with("models")
+        || lower.starts_with("list-models")
+        || lower.starts_with("list models")
+    {
         Command::Models
     } else if let Some(model) = strip_command_prefix(&lower, cleaned, "use") {
         Command::Use(model)
@@ -599,7 +659,12 @@ fn summarize_and_send(
         return;
     }
 
-    println!("Summarizing {} message(s) in '{}' with model '{}'", messages.len(), group_name, model);
+    println!(
+        "Summarizing {} message(s) in '{}' with model '{}'",
+        messages.len(),
+        group_name,
+        model
+    );
     let transcript = format_transcript(messages, archive);
     let user_prompt = format!(
         "Summarize these messages from the group \"{}\":\n\n{}",
@@ -842,7 +907,8 @@ fn handle_fact_check(config: &config::Config, group_id: &str, chain: &[String], 
 
     let message = format!(
         "**Fact Check** _({} messages in thread)_\n\n{}",
-        chain.len(), analysis
+        chain.len(),
+        analysis
     );
 
     let _ = signal::send_message(
@@ -854,7 +920,10 @@ fn handle_fact_check(config: &config::Config, group_id: &str, chain: &[String], 
     );
 }
 
-fn format_transcript(messages: &[signal::Message], archive: &HashMap<i64, signal::Message>) -> String {
+fn format_transcript(
+    messages: &[signal::Message],
+    archive: &HashMap<i64, signal::Message>,
+) -> String {
     let mut lines = Vec::with_capacity(messages.len());
     for msg in messages {
         let time = scheduler::format_timestamp(msg.timestamp);
@@ -900,7 +969,14 @@ mod tests {
         }
     }
 
-    fn make_reply(sender: &str, text: &str, ts: i64, quote_id: i64, quote_author: &str, quote_text: &str) -> signal::Message {
+    fn make_reply(
+        sender: &str,
+        text: &str,
+        ts: i64,
+        quote_id: i64,
+        quote_author: &str,
+        quote_text: &str,
+    ) -> signal::Message {
         signal::Message {
             sender: sender.to_string(),
             sender_name: Some(sender.to_string()),
@@ -926,8 +1002,14 @@ mod tests {
 
     #[test]
     fn test_cmd_summarize() {
-        assert!(matches!(extract_command("summarize", &None), Command::Summarize));
-        assert!(matches!(extract_command("summary", &None), Command::Summarize));
+        assert!(matches!(
+            extract_command("summarize", &None),
+            Command::Summarize
+        ));
+        assert!(matches!(
+            extract_command("summary", &None),
+            Command::Summarize
+        ));
     }
 
     #[test]
@@ -954,8 +1036,14 @@ mod tests {
     #[test]
     fn test_cmd_models() {
         assert!(matches!(extract_command("models", &None), Command::Models));
-        assert!(matches!(extract_command("list-models", &None), Command::Models));
-        assert!(matches!(extract_command("list models", &None), Command::Models));
+        assert!(matches!(
+            extract_command("list-models", &None),
+            Command::Models
+        ));
+        assert!(matches!(
+            extract_command("list models", &None),
+            Command::Models
+        ));
     }
 
     #[test]
@@ -968,13 +1056,22 @@ mod tests {
 
     #[test]
     fn test_cmd_unknown() {
-        assert!(matches!(extract_command("blah blah", &None), Command::Unknown));
+        assert!(matches!(
+            extract_command("blah blah", &None),
+            Command::Unknown
+        ));
     }
 
     #[test]
     fn test_cmd_strips_mention_placeholder() {
-        assert!(matches!(extract_command("\u{FFFC} help", &None), Command::Help));
-        assert!(matches!(extract_command("\u{FFFC}  summarize", &None), Command::Summarize));
+        assert!(matches!(
+            extract_command("\u{FFFC} help", &None),
+            Command::Help
+        ));
+        assert!(matches!(
+            extract_command("\u{FFFC}  summarize", &None),
+            Command::Summarize
+        ));
     }
 
     #[test]
@@ -1007,7 +1104,10 @@ mod tests {
             author: "+123".to_string(),
         });
         // "that's true" should NOT trigger — only "is this true"
-        assert!(matches!(extract_command("that's true", &quote), Command::Unknown));
+        assert!(matches!(
+            extract_command("that's true", &quote),
+            Command::Unknown
+        ));
     }
 
     #[test]
@@ -1019,7 +1119,10 @@ mod tests {
         });
         // Other commands should still work even when replying
         assert!(matches!(extract_command("help", &quote), Command::Help));
-        assert!(matches!(extract_command("summarize", &quote), Command::Summarize));
+        assert!(matches!(
+            extract_command("summarize", &quote),
+            Command::Summarize
+        ));
     }
 
     // ── build_reply_chain tests ──
@@ -1066,7 +1169,10 @@ mod tests {
         archive.insert(1000, make_msg("Alice", "Root message", 1000));
 
         // Bob replies to Alice at ts=2000
-        archive.insert(2000, make_reply("Bob", "Reply to Alice", 2000, 1000, "Alice", "Root message"));
+        archive.insert(
+            2000,
+            make_reply("Bob", "Reply to Alice", 2000, 1000, "Alice", "Root message"),
+        );
 
         // Charlie replies to Bob. Signal quote = {id: 2000, author: "Bob", text: "Reply to Alice"}
         let quote = signal::Quote {
@@ -1077,8 +1183,8 @@ mod tests {
 
         let chain = build_reply_chain(&quote, &archive, 50);
         assert_eq!(chain.len(), 2);
-        assert_eq!(chain[0], "Alice: Root message");   // followed from Bob's quote
-        assert_eq!(chain[1], "Bob: Reply to Alice");   // the quoted message itself
+        assert_eq!(chain[0], "Alice: Root message"); // followed from Bob's quote
+        assert_eq!(chain[1], "Bob: Reply to Alice"); // the quoted message itself
     }
 
     #[test]
@@ -1090,7 +1196,17 @@ mod tests {
         for i in 1..10 {
             let ts = 1000 + i * 1000;
             let prev_ts = ts - 1000;
-            archive.insert(ts, make_reply("User", &format!("Msg {}", i + 1), ts, prev_ts, "User", &format!("Msg {}", i)));
+            archive.insert(
+                ts,
+                make_reply(
+                    "User",
+                    &format!("Msg {}", i + 1),
+                    ts,
+                    prev_ts,
+                    "User",
+                    &format!("Msg {}", i),
+                ),
+            );
         }
 
         let quote = signal::Quote {
@@ -1142,7 +1258,14 @@ mod tests {
         let original = make_msg("Alice", "I think Rust is great", 1000);
         archive.insert(1000, original);
 
-        let reply = make_reply("Bob", "Totally agree", 2000, 1000, "Alice", "I think Rust is great");
+        let reply = make_reply(
+            "Bob",
+            "Totally agree",
+            2000,
+            1000,
+            "Alice",
+            "I think Rust is great",
+        );
         let msgs = vec![reply];
 
         let transcript = format_transcript(&msgs, &archive);
@@ -1246,14 +1369,26 @@ mod tests {
     #[test]
     fn test_dm_freeform_text_is_unknown() {
         // Regular chat messages should be Unknown (routed to LLM chat in DMs)
-        assert!(matches!(extract_command("what is the meaning of life", &None), Command::Unknown));
-        assert!(matches!(extract_command("hello there", &None), Command::Unknown));
-        assert!(matches!(extract_command("tell me a joke", &None), Command::Unknown));
+        assert!(matches!(
+            extract_command("what is the meaning of life", &None),
+            Command::Unknown
+        ));
+        assert!(matches!(
+            extract_command("hello there", &None),
+            Command::Unknown
+        ));
+        assert!(matches!(
+            extract_command("tell me a joke", &None),
+            Command::Unknown
+        ));
     }
 
     #[test]
     fn test_dm_fact_check_usage_without_reply() {
-        assert!(matches!(extract_command("is this true?", &None), Command::FactCheckUsage));
+        assert!(matches!(
+            extract_command("is this true?", &None),
+            Command::FactCheckUsage
+        ));
     }
 
     // ── bot_name prompt substitution ──

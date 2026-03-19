@@ -230,7 +230,10 @@ mod tests {
 
     #[test]
     fn test_seconds_until_next_daily_returns_positive() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let wait = seconds_until_next_daily(now);
         assert!(wait > 0);
         assert!(wait <= SECS_PER_DAY);
@@ -238,7 +241,10 @@ mod tests {
 
     #[test]
     fn test_seconds_until_next_weekly_returns_positive() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let wait = seconds_until_next_weekly(now);
         assert!(wait > 0);
         assert!(wait <= 7 * SECS_PER_DAY);
@@ -246,7 +252,10 @@ mod tests {
 
     #[test]
     fn test_seconds_until_next_monthly_returns_positive() {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         let wait = seconds_until_next_monthly(now);
         assert!(wait > 0);
         assert!(wait <= 62 * SECS_PER_DAY); // max ~2 months
