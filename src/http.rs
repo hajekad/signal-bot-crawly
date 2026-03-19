@@ -46,6 +46,30 @@ pub fn http_post(host: &str, port: u16, path: &str, json: &str) -> Result<(u16, 
     http_post_with_auth(host, port, path, json, None)
 }
 
+pub fn http_put(host: &str, port: u16, path: &str, json: &str) -> Result<(u16, String), String> {
+    let addr = format!("{}:{}", host, port);
+    let mut stream = TcpStream::connect(&addr)
+        .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+
+    let request = format!(
+        "PUT {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        path, host, port, json.len(), json
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("Failed to write request: {}", e))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    parse_http_response(&response)
+}
+
 pub fn http_post_with_auth(host: &str, port: u16, path: &str, json: &str, api_key: Option<&str>) -> Result<(u16, String), String> {
     let addr = format!("{}:{}", host, port);
     let mut stream = TcpStream::connect(&addr)

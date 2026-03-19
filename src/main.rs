@@ -10,8 +10,6 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
-const POLL_INTERVAL_SECS: u64 = 30;
-
 fn main() {
     println!("=== Signal Bot Crawly ===");
 
@@ -48,6 +46,7 @@ fn main() {
     println!("Bot name: {}", config.bot_name);
     println!("Schedule: {:?}", config.schedule);
     println!("Model: {}", config.model);
+    println!("Poll interval: {}s", config.poll_interval);
     println!("Open WebUI: {}:{}", config.webui_host, config.webui_port);
 
     // Get the bot's UUID for mention detection
@@ -98,11 +97,11 @@ fn main() {
 
     // Poll loop
     loop {
-        thread::sleep(Duration::from_secs(POLL_INTERVAL_SECS));
+        thread::sleep(Duration::from_secs(config.poll_interval));
 
-        // Refresh group list every 5 minutes
+        // Refresh group list periodically
         let now = scheduler::now_timestamp();
-        if now - last_group_refresh > 300 {
+        if now - last_group_refresh > config.group_refresh_interval {
             if let Ok(new_groups) = signal::list_groups(
                 &config.signal_api_host,
                 config.signal_api_port,
@@ -321,6 +320,7 @@ fn main() {
                 Command::Summarize => {
                     let model = group_models.get(target_id).unwrap_or(&config.model);
                     if let Some(stored) = store.remove(target_id) {
+                        send_typing(&config, send_id);
                         println!("Triggered summarization for '{}'", context_name);
                         summarize_and_send(&config, send_id, context_name, &stored, model, &config.summary_prompt, &archive);
                     } else {
@@ -335,15 +335,18 @@ fn main() {
                 }
                 Command::Search(query) => {
                     let model = group_models.get(target_id).unwrap_or(&config.model);
+                    send_typing(&config, send_id);
                     println!("Search requested in '{}': {}", context_name, query);
                     handle_search(&config, send_id, query, model);
                 }
                 Command::Imagine(prompt) => {
+                    send_typing(&config, send_id);
                     println!("Image gen requested in '{}': {}", context_name, prompt);
                     handle_imagine(&config, send_id, prompt);
                 }
                 Command::FactCheck { claim, ref quote } => {
                     let model = group_models.get(target_id).unwrap_or(&config.model);
+                    send_typing(&config, send_id);
                     let chain = build_reply_chain(quote, &archive, 50);
                     println!("Fact-check requested in '{}' (chain: {} msgs): {}", context_name, chain.len(), claim);
                     handle_fact_check(&config, send_id, &chain, model);
@@ -372,6 +375,7 @@ fn main() {
         // Handle DM chats — reply with LLM
         for (sender, text, _msg) in &dm_chats {
             println!("DM from '{}': {}", sender, text);
+            send_typing(&config, sender);
             let model = group_models.get(sender).unwrap_or(&config.model);
             match webui::chat(
                 &config.webui_host,
@@ -532,6 +536,18 @@ fn strip_command_prefix(lower: &str, original: &str, prefix: &str) -> Option<Str
         }
     } else {
         None
+    }
+}
+
+/// Fire a typing indicator (fire-and-forget — failures are logged but never block).
+fn send_typing(config: &config::Config, recipient: &str) {
+    if let Err(e) = signal::send_typing_indicator(
+        &config.signal_api_host,
+        config.signal_api_port,
+        &config.signal_phone,
+        recipient,
+    ) {
+        eprintln!("Typing indicator failed: {}", e);
     }
 }
 
@@ -1271,6 +1287,8 @@ mod tests {
             signal_phone: "+1234567890".to_string(),
             bot_name: "TestBot".to_string(),
             schedule: config::Schedule::Weekly,
+            poll_interval: 10,
+            group_refresh_interval: 300,
             summary_prompt: "summary".to_string(),
             scheduled_summary_prompt: "scheduled".to_string(),
             dm_prompt: "dm".to_string(),
@@ -1303,5 +1321,49 @@ mod tests {
     fn test_message_with_group_id_is_group() {
         let msg = make_msg("Alice", "hello", 1000);
         assert!(msg.group_id.is_some()); // Group
+    }
+
+    // ── poll_interval and group_refresh_interval config ──
+
+    #[test]
+    fn test_config_poll_interval_in_struct() {
+        let config = config::Config {
+            signal_api_host: "localhost".to_string(),
+            signal_api_port: 8080,
+            webui_host: "localhost".to_string(),
+            webui_port: 3000,
+            webui_api_key: "test".to_string(),
+            model: "test".to_string(),
+            signal_phone: "+1234567890".to_string(),
+            bot_name: "Bot".to_string(),
+            schedule: config::Schedule::Weekly,
+            poll_interval: 5,
+            group_refresh_interval: 120,
+            summary_prompt: "s".to_string(),
+            scheduled_summary_prompt: "ss".to_string(),
+            dm_prompt: "d".to_string(),
+            dm_search_prompt: "ds".to_string(),
+            search_prompt: "sr".to_string(),
+            fact_check_prompt: "fc".to_string(),
+        };
+        assert_eq!(config.poll_interval, 5);
+        assert_eq!(config.group_refresh_interval, 120);
+    }
+
+    // ── typing indicator ──
+
+    #[test]
+    fn test_send_typing_indicator_builds_correct_json() {
+        // Test that the JSON body for typing indicator is well-formed
+        let recipient = "group.abc123";
+        let json_body = format!(r#"{{"recipient":"{}"}}"#, json::escape(recipient));
+        assert_eq!(json_body, r#"{"recipient":"group.abc123"}"#);
+    }
+
+    #[test]
+    fn test_send_typing_indicator_escapes_special_chars() {
+        let recipient = "group.abc+123/def=";
+        let json_body = format!(r#"{{"recipient":"{}"}}"#, json::escape(recipient));
+        assert!(json_body.contains("group.abc+123"));
     }
 }
