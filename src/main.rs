@@ -532,6 +532,26 @@ fn main() {
 
         // Handle stay mode — check if bot should respond in active groups
         {
+            // Auto-shutdown idle stay sessions (3 min timeout)
+            let expired = sessions.expire_idle_stays(
+                &config.webui_host,
+                config.webui_port,
+                &config.webui_api_key,
+            );
+            for id in &expired {
+                let group = find_group(&groups, id);
+                let send_id = group.map(|g| g.id.as_str()).unwrap_or(id.as_str());
+                let name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
+                println!("Stay mode auto-expired in '{}' (idle timeout)", name);
+                let _ = signal::send_message(
+                    &config.signal_api_host,
+                    config.signal_api_port,
+                    &config.signal_phone,
+                    send_id,
+                    "_Session ended (idle timeout). All conversation memory wiped._",
+                );
+            }
+
             let stay_group_ids: Vec<String> = sessions.stay_sessions.keys().cloned().collect();
             for group_id in stay_group_ids {
                 // Collect new messages for this group from the store
@@ -551,6 +571,7 @@ fn main() {
                     continue;
                 }
 
+                sessions.touch_stay(&group_id);
                 let recent = new_msgs.join("\n");
 
                 if let Some(session) = sessions.stay_sessions.get_mut(&group_id) {

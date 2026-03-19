@@ -14,6 +14,8 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+const STAY_IDLE_TIMEOUT_SECS: u64 = 180; // 3 minutes
+
 /// An active conversation session tied to an Open WebUI chat.
 pub struct Session {
     /// Open WebUI chat ID
@@ -22,6 +24,15 @@ pub struct Session {
     pub messages: Vec<ChatMessage>,
     /// Model to use for this session
     pub model: String,
+    /// Last time new messages were seen (UNIX seconds)
+    pub last_activity: u64,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Manages ephemeral conversation sessions.
@@ -57,6 +68,7 @@ impl SessionManager {
                     chat_id,
                     messages: Vec::new(),
                     model: model.to_string(),
+                    last_activity: now_secs(),
                 },
             );
         }
@@ -82,6 +94,7 @@ impl SessionManager {
                 chat_id: chat_id.clone(),
                 messages: Vec::new(),
                 model: model.to_string(),
+                last_activity: now_secs(),
             },
         );
         Some(chat_id)
@@ -97,6 +110,28 @@ impl SessionManager {
     /// Check if stay is active for a group.
     pub fn is_stay_active(&self, group_id: &str) -> bool {
         self.stay_sessions.contains_key(group_id)
+    }
+
+    /// Update last_activity for a stay session (call when new messages arrive).
+    pub fn touch_stay(&mut self, group_id: &str) {
+        if let Some(session) = self.stay_sessions.get_mut(group_id) {
+            session.last_activity = now_secs();
+        }
+    }
+
+    /// End any stay sessions idle for more than 3 minutes. Returns list of expired group IDs.
+    pub fn expire_idle_stays(&mut self, host: &str, port: u16, api_key: &str) -> Vec<String> {
+        let now = now_secs();
+        let expired: Vec<String> = self
+            .stay_sessions
+            .iter()
+            .filter(|(_, s)| now - s.last_activity > STAY_IDLE_TIMEOUT_SECS)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            self.end_stay(id, host, port, api_key);
+        }
+        expired
     }
 
     /// Delete ALL sessions (stay + DM). Called on bot shutdown.
@@ -299,6 +334,7 @@ mod tests {
                 chat_id: "test".to_string(),
                 messages: Vec::new(),
                 model: "test".to_string(),
+                last_activity: 0,
             },
         );
         assert!(mgr.is_stay_active("group1"));
@@ -310,6 +346,7 @@ mod tests {
             chat_id: "test".to_string(),
             messages: Vec::new(),
             model: "test".to_string(),
+            last_activity: 0,
         };
         session.messages.push(ChatMessage {
             role: "user".to_string(),
