@@ -17,18 +17,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      ollama:
-        image: ollama/ollama:latest
-        ports:
-          - 11434:11434
-        options: >-
-          --health-cmd "curl -f http://localhost:11434/ || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 30s
-
     steps:
       - uses: actions/checkout@v4
 
@@ -57,8 +45,12 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Pull test model
-        run: curl -s http://localhost:11434/api/pull -d '{"name":"tinyllama"}' | tail -1
+      - name: Start Ollama
+        run: |
+          curl -fsSL https://ollama.com/install.sh | sh
+          ollama serve &
+          sleep 5
+          ollama pull tinyllama
 
       - name: Unit tests
         run: cargo test --bin signal-bot-crawly
