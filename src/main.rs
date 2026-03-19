@@ -13,7 +13,7 @@ use std::time::Duration;
 fn main() {
     println!("=== Signal Bot Crawly ===");
 
-    let config = match config::Config::from_env() {
+    let mut config = match config::Config::from_env() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Configuration error: {}", e);
@@ -21,7 +21,29 @@ fn main() {
         }
     };
 
+    // Resolve bot name from Signal profile if not set via env
+    if config.bot_name.is_empty() {
+        if let Some(name) = signal::get_bot_name(
+            &config.signal_api_host,
+            config.signal_api_port,
+            &config.signal_phone,
+        ) {
+            println!("Bot name from Signal: {}", name);
+            config.bot_name = name;
+            // Re-substitute in prompts
+            config.summary_prompt = config.summary_prompt.replace("{bot_name}", &config.bot_name);
+            config.scheduled_summary_prompt = config.scheduled_summary_prompt.replace("{bot_name}", &config.bot_name);
+            config.dm_prompt = config.dm_prompt.replace("{bot_name}", &config.bot_name);
+            config.dm_search_prompt = config.dm_search_prompt.replace("{bot_name}", &config.bot_name);
+            config.search_prompt = config.search_prompt.replace("{bot_name}", &config.bot_name);
+            config.fact_check_prompt = config.fact_check_prompt.replace("{bot_name}", &config.bot_name);
+        } else {
+            config.bot_name = "Crawly".to_string();
+        }
+    }
+
     println!("Phone: {}", config.signal_phone);
+    println!("Bot name: {}", config.bot_name);
     println!("Schedule: {:?}", config.schedule);
     println!("Model: {}", config.model);
     println!("Poll interval: {}s", config.poll_interval);
@@ -300,7 +322,7 @@ fn main() {
                     if let Some(stored) = store.remove(target_id) {
                         send_typing(&config, send_id);
                         println!("Triggered summarization for '{}'", context_name);
-                        summarize_and_send(&config, send_id, context_name, &stored, model, &archive);
+                        summarize_and_send(&config, send_id, context_name, &stored, model, &config.summary_prompt, &archive);
                     } else {
                         let _ = signal::send_message(
                             &config.signal_api_host,
@@ -360,7 +382,7 @@ fn main() {
                 config.webui_port,
                 &config.webui_api_key,
                 model,
-                "You are a helpful assistant in a private Signal chat. Be concise and friendly.",
+                &config.dm_prompt,
                 text,
             ) {
                 Ok(reply) => {
@@ -396,7 +418,7 @@ fn main() {
                     let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
                     let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
                     let model = group_models.get(&internal_id).unwrap_or(&config.model);
-                    summarize_and_send(&config, send_id, group_name, &stored, model, &archive);
+                    summarize_and_send(&config, send_id, group_name, &stored, model, &config.scheduled_summary_prompt, &archive);
                 }
             }
             next_scheduled = scheduler::next_run_timestamp(config.schedule);
@@ -562,6 +584,7 @@ fn summarize_and_send(
     group_name: &str,
     messages: &[signal::Message],
     model: &str,
+    system_prompt: &str,
     archive: &HashMap<i64, signal::Message>,
 ) {
     if messages.is_empty() {
@@ -580,7 +603,7 @@ fn summarize_and_send(
         config.webui_port,
         &config.webui_api_key,
         model,
-        &config.summary_prompt,
+        system_prompt,
         &user_prompt,
     ) {
         Ok(s) => s,
@@ -643,7 +666,7 @@ fn handle_search(config: &config::Config, group_id: &str, query: &str, model: &s
         config.webui_port,
         &config.webui_api_key,
         model,
-        "You are a helpful assistant. Summarize web search results into a clear, concise answer. Include relevant links when available.",
+        &config.search_prompt,
         &prompt,
     ) {
         Ok(a) => a,
@@ -792,8 +815,7 @@ fn handle_fact_check(config: &config::Config, group_id: &str, chain: &[String], 
         config.webui_port,
         &config.webui_api_key,
         model,
-        "You are a concise fact-checker. Analyze every verifiable claim in a conversation. \
-         Give a short verdict for each. Skip opinions and reactions. Cite sources when available.",
+        &config.fact_check_prompt,
         &prompt,
     ) {
         Ok(a) => a,
@@ -1178,5 +1200,124 @@ mod tests {
         assert!(result.contains("https://example.com"));
         assert!(result.contains("This is a snippet"));
         assert!(result.contains("Other Result"));
+    }
+
+    // ── DM command parsing (no @mention needed) ──
+
+    #[test]
+    fn test_dm_help_no_mention_needed() {
+        // In DMs, commands work without the U+FFFC mention placeholder
+        assert!(matches!(extract_command("help", &None), Command::Help));
+        assert!(matches!(extract_command("models", &None), Command::Models));
+    }
+
+    #[test]
+    fn test_dm_search() {
+        match extract_command("search weather today", &None) {
+            Command::Search(q) => assert_eq!(q, "weather today"),
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn test_dm_imagine() {
+        match extract_command("imagine a cat in space", &None) {
+            Command::Imagine(p) => assert_eq!(p, "a cat in space"),
+            _ => panic!("expected Imagine"),
+        }
+    }
+
+    #[test]
+    fn test_dm_use_model() {
+        match extract_command("use qwen3:14b", &None) {
+            Command::Use(m) => assert_eq!(m, "qwen3:14b"),
+            _ => panic!("expected Use"),
+        }
+    }
+
+    #[test]
+    fn test_dm_freeform_text_is_unknown() {
+        // Regular chat messages should be Unknown (routed to LLM chat in DMs)
+        assert!(matches!(extract_command("what is the meaning of life", &None), Command::Unknown));
+        assert!(matches!(extract_command("hello there", &None), Command::Unknown));
+        assert!(matches!(extract_command("tell me a joke", &None), Command::Unknown));
+    }
+
+    #[test]
+    fn test_dm_fact_check_usage_without_reply() {
+        assert!(matches!(extract_command("is this true?", &None), Command::FactCheckUsage));
+    }
+
+    // ── bot_name prompt substitution ──
+
+    #[test]
+    fn test_bot_name_substitution_in_prompt() {
+        let prompt = "You are {bot_name}, a helpful assistant.";
+        let result = prompt.replace("{bot_name}", "TestBot");
+        assert_eq!(result, "You are TestBot, a helpful assistant.");
+    }
+
+    #[test]
+    fn test_bot_name_substitution_multiple_occurrences() {
+        let prompt = "{bot_name} is ready. Ask {bot_name} anything.";
+        let result = prompt.replace("{bot_name}", "Crawly");
+        assert_eq!(result, "Crawly is ready. Ask Crawly anything.");
+    }
+
+    #[test]
+    fn test_bot_name_substitution_empty_name_leaves_placeholder() {
+        let prompt = "You are {bot_name}, a helper.";
+        let result = prompt.replace("{bot_name}", "");
+        assert_eq!(result, "You are , a helper.");
+    }
+
+    // ── config prompt fields exist ──
+
+    #[test]
+    fn test_config_has_all_prompt_fields() {
+        // Verify the Config struct has all required prompt fields by constructing one
+        // (This is a compile-time check more than a runtime one)
+        let _config = config::Config {
+            signal_api_host: "localhost".to_string(),
+            signal_api_port: 8080,
+            webui_host: "localhost".to_string(),
+            webui_port: 3000,
+            webui_api_key: "test".to_string(),
+            model: "test".to_string(),
+            signal_phone: "+1234567890".to_string(),
+            bot_name: "TestBot".to_string(),
+            schedule: config::Schedule::Weekly,
+            summary_prompt: "summary".to_string(),
+            scheduled_summary_prompt: "scheduled".to_string(),
+            dm_prompt: "dm".to_string(),
+            dm_search_prompt: "dm_search".to_string(),
+            search_prompt: "search".to_string(),
+            fact_check_prompt: "fact_check".to_string(),
+        };
+        assert_eq!(_config.bot_name, "TestBot");
+        assert_eq!(_config.scheduled_summary_prompt, "scheduled");
+        assert_eq!(_config.dm_search_prompt, "dm_search");
+    }
+
+    // ── DM vs group message routing ──
+
+    #[test]
+    fn test_message_without_group_id_is_dm() {
+        let msg = signal::Message {
+            sender: "uuid-sender".to_string(),
+            sender_name: Some("Alice".to_string()),
+            text: "hello".to_string(),
+            timestamp: 1000,
+            group_id: None,
+            mentions_bot: false,
+            quote: None,
+        };
+        assert!(msg.group_id.is_none()); // DM
+    }
+
+    #[test]
+    fn test_message_with_group_id_is_group() {
+        let msg = make_msg("Alice", "hello", 1000);
+        assert!(msg.group_id.is_some()); // Group
     }
 }

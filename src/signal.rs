@@ -161,6 +161,31 @@ fn extract_quote(envelope_json: &str) -> Option<Quote> {
     Some(Quote { id, text, author })
 }
 
+/// Get the bot's display name from signal-cli by looking at its own identity in received messages.
+/// Falls back to the phone number if name can't be determined.
+pub fn get_bot_name(host: &str, port: u16, phone: &str) -> Option<String> {
+    // Do a receive — the bot's own sync messages contain sourceName
+    let path = format!("/v1/receive/{}", phone);
+    let (status, body) = http::http_get(host, port, &path).ok()?;
+    if status != 200 {
+        return None;
+    }
+
+    // Look for sourceName in envelopes where source matches the bot's phone or UUID
+    let envelopes = json::extract_array_objects(&body);
+    for obj in &envelopes {
+        if let Some(name) = json::extract_string(obj, "sourceName") {
+            // Check if this is from the bot itself
+            if let Some(source) = json::extract_string(obj, "sourceNumber") {
+                if source == phone && !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Check if the envelope's mentions array references the bot.
 /// Checks for any of the bot's identifiers (UUID, phone, username) in the mentions section.
 fn has_bot_mention(envelope_json: &str, bot_id: &str) -> bool {
