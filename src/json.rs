@@ -19,32 +19,49 @@ pub fn escape(s: &str) -> String {
 
 /// Extract a JSON string value for the given key.
 /// Searches for `"key": "value"` or `"key":"value"` and returns the unescaped value.
+/// Verifies the key is standalone (not a substring of another key like "groupId" matching "id").
 pub fn extract_string(json: &str, key: &str) -> Option<String> {
     let pattern = format!("\"{}\"", key);
-    let idx = json.find(&pattern)?;
-    let after_key = &json[idx + pattern.len()..];
-
-    // Skip whitespace and colon
-    let after_colon = after_key.trim_start().strip_prefix(':')?;
-    let trimmed = after_colon.trim_start();
-
-    if !trimmed.starts_with('"') {
-        return None;
+    let mut search_from = 0;
+    loop {
+        let idx = json[search_from..].find(&pattern)?;
+        let abs_idx = search_from + idx;
+        // Verify this is a standalone key, not a substring of another key
+        if abs_idx == 0 || !json.as_bytes()[abs_idx - 1].is_ascii_alphanumeric() {
+            let after_key = &json[abs_idx + pattern.len()..];
+            let after_colon = after_key.trim_start().strip_prefix(':')?;
+            let trimmed = after_colon.trim_start();
+            if trimmed.starts_with('"') {
+                return extract_json_string_at(trimmed);
+            }
+        }
+        search_from = abs_idx + 1;
     }
-
-    extract_json_string_at(trimmed)
 }
 
 /// Extract a JSON number value for the given key.
+/// Verifies the key is standalone (not a substring of another key).
 pub fn extract_number(json: &str, key: &str) -> Option<i64> {
     let pattern = format!("\"{}\"", key);
-    let idx = json.find(&pattern)?;
-    let after_key = &json[idx + pattern.len()..];
-    let after_colon = after_key.trim_start().strip_prefix(':')?;
-    let trimmed = after_colon.trim_start();
-
-    let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '-')?;
-    trimmed[..end].parse().ok()
+    let mut search_from = 0;
+    loop {
+        let idx = json[search_from..].find(&pattern)?;
+        let abs_idx = search_from + idx;
+        // Verify this is a standalone key, not a substring of another key
+        if abs_idx == 0 || !json.as_bytes()[abs_idx - 1].is_ascii_alphanumeric() {
+            let after_key = &json[abs_idx + pattern.len()..];
+            if let Some(after_colon) = after_key.trim_start().strip_prefix(':') {
+                let trimmed = after_colon.trim_start();
+                let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(trimmed.len());
+                if end > 0 {
+                    if let Ok(n) = trimmed[..end].parse() {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+        search_from = abs_idx + 1;
+    }
 }
 
 /// Extract a JSON string starting at the opening quote.
@@ -74,7 +91,22 @@ fn extract_json_string_at(s: &str) -> Option<String> {
                             hex.push(chars.next()?);
                         }
                         let cp = u32::from_str_radix(&hex, 16).ok()?;
-                        if let Some(c) = char::from_u32(cp) {
+                        if (0xD800..=0xDBFF).contains(&cp) {
+                            // High surrogate — expect \uDCxx low surrogate
+                            if chars.next() == Some('\\') && chars.next() == Some('u') {
+                                let mut hex2 = String::with_capacity(4);
+                                for _ in 0..4 {
+                                    hex2.push(chars.next()?);
+                                }
+                                let cp2 = u32::from_str_radix(&hex2, 16).ok()?;
+                                if (0xDC00..=0xDFFF).contains(&cp2) {
+                                    let combined = 0x10000 + ((cp - 0xD800) << 10) + (cp2 - 0xDC00);
+                                    if let Some(c) = char::from_u32(combined) {
+                                        result.push(c);
+                                    }
+                                }
+                            }
+                        } else if let Some(c) = char::from_u32(cp) {
                             result.push(c);
                         }
                     }
@@ -325,6 +357,44 @@ mod tests {
         // Second message
         assert_eq!(extract_string(&objects[1], "message"), Some("Anyone free for lunch?".to_string()));
         assert_eq!(extract_string(&objects[1], "source"), Some("+1555000111".to_string()));
+    }
+
+    #[test]
+    fn test_extract_string_key_not_substring_match() {
+        // "id" must not match "groupId"
+        let json = r#"{"groupId": "group.abc123", "id": "standalone-id"}"#;
+        assert_eq!(extract_string(json, "id"), Some("standalone-id".to_string()));
+    }
+
+    #[test]
+    fn test_extract_number_key_not_substring_match() {
+        // "id" must not match "parentId"
+        let json = r#"{"parentId": 999, "id": 42}"#;
+        assert_eq!(extract_number(json, "id"), Some(42));
+    }
+
+    #[test]
+    fn test_extract_string_surrogate_pair_emoji() {
+        // \uD83D\uDE00 = U+1F600 grinning face
+        let json = r#"{"emoji": "\uD83D\uDE00"}"#;
+        let result = extract_string(json, "emoji").unwrap();
+        assert_eq!(result, "\u{1F600}");
+    }
+
+    #[test]
+    fn test_extract_string_surrogate_pair_mixed() {
+        // Mix of surrogate pair emoji and normal text
+        let json = r#"{"msg": "Hello \uD83D\uDE00 world"}"#;
+        let result = extract_string(json, "msg").unwrap();
+        assert_eq!(result, "Hello \u{1F600} world");
+    }
+
+    #[test]
+    fn test_extract_string_surrogate_pair_multiple() {
+        // Two surrogate pair emojis back to back
+        let json = r#"{"msg": "\uD83D\uDE00\uD83D\uDE01"}"#;
+        let result = extract_string(json, "msg").unwrap();
+        assert_eq!(result, "\u{1F600}\u{1F601}");
     }
 
     #[test]

@@ -124,13 +124,22 @@ fn extract_quote(envelope_json: &str) -> Option<Quote> {
     let brace_idx = after_quote.find('{')?;
     let quote_body = &after_quote[brace_idx..];
 
-    // Find matching closing brace
+    // Find matching closing brace (string-aware to handle braces inside JSON values)
+    let bytes = quote_body.as_bytes();
     let mut depth = 0;
     let mut end = 0;
-    for (i, c) in quote_body.chars().enumerate() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
+    let mut in_string = false;
+    let mut escape_next = false;
+    for i in 0..bytes.len() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        match bytes[i] {
+            b'\\' if in_string => escape_next = true,
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
                 depth -= 1;
                 if depth == 0 {
                     end = i;
@@ -708,6 +717,35 @@ mod tests {
         let quote = messages[0].quote.as_ref().unwrap();
         assert_eq!(quote.text, "Vaccines cause autism");
         assert_eq!(quote.id, 1612041800000);
+    }
+
+    #[test]
+    fn test_parse_messages_with_quote_containing_braces() {
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "+1987654321",
+                    "sourceName": "Bob",
+                    "timestamp": 1612041800000,
+                    "dataMessage": {
+                        "timestamp": 1612041800000,
+                        "message": "What does that mean?",
+                        "quote": {
+                            "id": 1612041718367,
+                            "authorNumber": "+1555000111",
+                            "text": "use {key} syntax for templates like {name}"
+                        },
+                        "groupInfo": {"groupId": "group.abc123", "type": "DELIVER"}
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "+0000000000");
+        assert_eq!(messages.len(), 1);
+        let quote = messages[0].quote.as_ref().unwrap();
+        assert_eq!(quote.text, "use {key} syntax for templates like {name}");
+        assert_eq!(quote.author, "+1555000111");
     }
 
     #[test]
