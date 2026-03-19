@@ -121,7 +121,7 @@ fn main() {
         for msg in messages {
             if let Some(group_id) = msg.group_id.clone() {
                 if msg.mentions_bot && msg.sender != config.signal_phone {
-                    let cmd = extract_command(&msg.text);
+                    let cmd = extract_command(&msg.text, &msg.quote);
                     commands.push((group_id, cmd));
                     continue;
                 }
@@ -164,6 +164,7 @@ fn main() {
                              *@bot imagine <prompt>* — Generate an image\n\
                              *@bot models* — List available LLMs\n\
                              *@bot use <model>* — Switch LLM for this group\n\
+                             *Reply to a message + @bot is this true?* — Fact-check that message\n\
                              *@bot help* — Show this help message\n\n\
                              _Current model: {}_",
                             current_model
@@ -265,6 +266,20 @@ fn main() {
                     println!("Image gen requested in '{}': {}", group_name, prompt);
                     handle_imagine(&config, send_id, prompt);
                 }
+                Command::FactCheck { claim } => {
+                    let model = group_models.get(internal_id).unwrap_or(&config.model);
+                    println!("Fact-check requested in '{}': {}", group_name, claim);
+                    handle_fact_check(&config, send_id, claim, model);
+                }
+                Command::FactCheckUsage => {
+                    let _ = signal::send_message(
+                        &config.signal_api_host,
+                        config.signal_api_port,
+                        &config.signal_phone,
+                        send_id,
+                        "To fact-check, *reply* to the message you want to check and tag me with exactly: *@bot is this true?*",
+                    );
+                }
                 Command::Unknown => {
                     let _ = signal::send_message(
                         &config.signal_api_host,
@@ -301,20 +316,34 @@ enum Command {
     Summarize,
     Search(String),
     Imagine(String),
+    FactCheck { claim: String },
+    FactCheckUsage,
     Models,
     Use(String),
     Help,
     Unknown,
 }
 
+fn is_fact_check_phrase(s: &str) -> bool {
+    s == "is this true?" || s == "is this true"
+}
+
 /// Extract a command from a message that mentions the bot.
-fn extract_command(text: &str) -> Command {
+fn extract_command(text: &str, quote: &Option<signal::Quote>) -> Command {
     let cleaned: String = text
         .chars()
         .filter(|c| *c != '\u{FFFC}')
         .collect::<String>();
     let cleaned = cleaned.trim();
     let lower = cleaned.to_lowercase();
+
+    // Fact-check: requires both a reply AND a trigger phrase
+    if is_fact_check_phrase(&lower) {
+        return match quote {
+            Some(q) => Command::FactCheck { claim: q.text.clone() },
+            None => Command::FactCheckUsage,
+        };
+    }
 
     if lower.starts_with("summarize") || lower.starts_with("summary") {
         Command::Summarize
@@ -548,6 +577,86 @@ fn handle_imagine(config: &config::Config, group_id: &str, prompt: &str) {
         Ok(()) => println!("Image sent to group"),
         Err(e) => eprintln!("Failed to send image: {}", e),
     }
+}
+
+fn handle_fact_check(config: &config::Config, group_id: &str, claim: &str, model: &str) {
+    // Step 1: Search the web for the claim
+    let search_context = match webui::web_search(
+        &config.webui_host,
+        config.webui_port,
+        &config.webui_api_key,
+        claim,
+    ) {
+        Ok(results) => results,
+        Err(e) => {
+            eprintln!("Fact-check search failed: {}", e);
+            String::new()
+        }
+    };
+
+    // Step 2: Ask the LLM to fact-check with the search results as context
+    let prompt = if search_context.is_empty() {
+        format!(
+            "Fact-check the following claim using your knowledge. Be honest if you're uncertain.\n\n\
+             **Claim:** \"{}\"\n\n\
+             Respond with:\n\
+             1. A verdict: TRUE, FALSE, PARTIALLY TRUE, UNVERIFIABLE, or OPINION\n\
+             2. A brief explanation (2-3 sentences)\n\
+             3. Key evidence or reasoning",
+            claim
+        )
+    } else {
+        format!(
+            "Fact-check the following claim using the web search results provided.\n\n\
+             **Claim:** \"{}\"\n\n\
+             **Search Results:**\n{}\n\n\
+             Respond with:\n\
+             1. A verdict: TRUE, FALSE, PARTIALLY TRUE, UNVERIFIABLE, or OPINION\n\
+             2. A brief explanation (2-3 sentences)\n\
+             3. Key evidence with sources",
+            claim, search_context
+        )
+    };
+
+    let analysis = match webui::chat(
+        &config.webui_host,
+        config.webui_port,
+        &config.webui_api_key,
+        model,
+        "You are a fact-checker. Analyze claims objectively. Always provide a clear verdict. \
+         Distinguish facts from opinions. Cite sources when available. Be concise.",
+        &prompt,
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Fact-check LLM failed: {}", e);
+            let _ = signal::send_message(
+                &config.signal_api_host,
+                config.signal_api_port,
+                &config.signal_phone,
+                group_id,
+                &format!("Fact-check failed: {}", e),
+            );
+            return;
+        }
+    };
+
+    // Truncate claim for display
+    let short_claim: String = claim.chars().take(100).collect();
+    let ellipsis = if claim.len() > 100 { "..." } else { "" };
+
+    let message = format!(
+        "**Fact Check**\n\n> _{}{}_\n\n{}",
+        short_claim, ellipsis, analysis
+    );
+
+    let _ = signal::send_message(
+        &config.signal_api_host,
+        config.signal_api_port,
+        &config.signal_phone,
+        group_id,
+        &message,
+    );
 }
 
 fn format_transcript(messages: &[signal::Message]) -> String {

@@ -9,6 +9,13 @@ pub struct Group {
     pub internal_id: String,
 }
 
+/// A quoted/replied-to message.
+#[derive(Debug)]
+pub struct Quote {
+    pub text: String,
+    pub author: String,
+}
+
 /// A received message from Signal.
 #[derive(Debug)]
 pub struct Message {
@@ -18,6 +25,7 @@ pub struct Message {
     pub timestamp: i64,
     pub group_id: Option<String>,
     pub mentions_bot: bool,
+    pub quote: Option<Quote>,
 }
 
 /// Fetch all groups for the registered phone number.
@@ -75,7 +83,8 @@ pub fn parse_messages(body: &str, bot_id: &str) -> Vec<Message> {
         let timestamp = json::extract_number(envelope_obj, "timestamp").unwrap_or(0);
         let group_id = json::extract_string(envelope_obj, "groupId");
         let mentions_bot = has_bot_mention(envelope_obj, bot_id);
-        messages.push(Message { sender, sender_name, text, timestamp, group_id, mentions_bot });
+        let quote = extract_quote(envelope_obj);
+        messages.push(Message { sender, sender_name, text, timestamp, group_id, mentions_bot, quote });
     }
     messages
 }
@@ -102,6 +111,51 @@ pub fn get_bot_uuid(host: &str, port: u16, phone: &str) -> Result<String, String
     }
 
     Err("Bot UUID not found in identities".to_string())
+}
+
+/// Extract a quoted/replied-to message from the envelope, if present.
+fn extract_quote(envelope_json: &str) -> Option<Quote> {
+    // Find the "quote" object in the envelope
+    let quote_idx = envelope_json.find("\"quote\"")?;
+    let after_quote = &envelope_json[quote_idx..];
+
+    // Find the opening brace of the quote object
+    let brace_idx = after_quote.find('{')?;
+    let quote_body = &after_quote[brace_idx..];
+
+    // Find matching closing brace
+    let mut depth = 0;
+    let mut end = 0;
+    for (i, c) in quote_body.chars().enumerate() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    if end == 0 {
+        return None;
+    }
+
+    let quote_obj = &quote_body[..=end];
+
+    let text = json::extract_string(quote_obj, "text")?;
+    if text.is_empty() {
+        return None;
+    }
+
+    let author = json::extract_string(quote_obj, "authorNumber")
+        .or_else(|| json::extract_string(quote_obj, "authorUuid"))
+        .or_else(|| json::extract_string(quote_obj, "author"))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Some(Quote { text, author })
 }
 
 /// Check if the envelope's mentions array references the bot.
