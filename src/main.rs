@@ -1,9 +1,11 @@
 mod base64;
 mod config;
+mod crypto;
 mod http;
 mod json;
 mod scheduler;
 mod signal;
+mod store;
 mod webui;
 
 use std::collections::HashMap;
@@ -86,8 +88,14 @@ fn main() {
 
     // Message store: group_id -> accumulated messages
     let mut store: HashMap<String, Vec<signal::Message>> = HashMap::new();
-    // Per-group model overrides: internal_id -> model name
-    let mut group_models: HashMap<String, String> = HashMap::new();
+    // Per-group model overrides: encrypted persistent store
+    let store_path = std::env::var("BOT_STORE_PATH")
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            format!("{}/.config/signal-bot-crawly/state.enc", home)
+        });
+    let mut group_models = store::EncryptedStore::open(&store_path, &config.webui_api_key);
+    println!("State store: {}", store_path);
     // Message archive: timestamp -> message (for following reply chains)
     let mut archive: HashMap<i64, signal::Message> = HashMap::new();
     let mut next_scheduled = scheduler::next_run_timestamp(config.schedule);
@@ -212,7 +220,7 @@ fn main() {
 
             match cmd {
                 Command::Help => {
-                    let current_model = group_models.get(target_id).unwrap_or(&config.model);
+                    let current_model = group_models.get(target_id).unwrap_or(config.model.as_str());
                     let is_dm = group.is_none();
                     let prefix = if is_dm { "" } else { "@bot " };
                     let fact_check_line = if is_dm {
@@ -255,7 +263,7 @@ fn main() {
                         &config.webui_api_key,
                     ) {
                         Ok(models) => {
-                            let current = group_models.get(target_id).unwrap_or(&config.model);
+                            let current = group_models.get(target_id).unwrap_or(config.model.as_str());
                             let list: String = models
                                 .iter()
                                 .map(|m| {
@@ -299,7 +307,7 @@ fn main() {
 
                     if valid {
                         println!("Model for '{}' set to '{}'", context_name, model_name);
-                        group_models.insert(target_id.clone(), model_name.clone());
+                        group_models.set(target_id, model_name);
                         let _ = signal::send_message(
                             &config.signal_api_host,
                             config.signal_api_port,
@@ -318,7 +326,7 @@ fn main() {
                     }
                 }
                 Command::Summarize => {
-                    let model = group_models.get(target_id).unwrap_or(&config.model);
+                    let model = group_models.get(target_id).unwrap_or(config.model.as_str());
                     if let Some(stored) = store.remove(target_id) {
                         send_typing(&config, send_id);
                         println!("Triggered summarization for '{}'", context_name);
@@ -334,7 +342,7 @@ fn main() {
                     }
                 }
                 Command::Search(query) => {
-                    let model = group_models.get(target_id).unwrap_or(&config.model);
+                    let model = group_models.get(target_id).unwrap_or(config.model.as_str());
                     send_typing(&config, send_id);
                     println!("Search requested in '{}': {}", context_name, query);
                     handle_search(&config, send_id, query, model);
@@ -345,7 +353,7 @@ fn main() {
                     handle_imagine(&config, send_id, prompt);
                 }
                 Command::FactCheck { claim, ref quote } => {
-                    let model = group_models.get(target_id).unwrap_or(&config.model);
+                    let model = group_models.get(target_id).unwrap_or(config.model.as_str());
                     send_typing(&config, send_id);
                     let chain = build_reply_chain(quote, &archive, 50);
                     println!("Fact-check requested in '{}' (chain: {} msgs): {}", context_name, chain.len(), claim);
@@ -376,7 +384,7 @@ fn main() {
         for (sender, text, _msg) in &dm_chats {
             println!("DM from '{}': {}", sender, text);
             send_typing(&config, sender);
-            let model = group_models.get(sender).unwrap_or(&config.model);
+            let model = group_models.get(sender).unwrap_or(config.model.as_str());
             match webui::chat(
                 &config.webui_host,
                 config.webui_port,
@@ -417,7 +425,7 @@ fn main() {
                     let group = find_group(&groups, &internal_id);
                     let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
                     let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
-                    let model = group_models.get(&internal_id).unwrap_or(&config.model);
+                    let model = group_models.get(&internal_id).unwrap_or(config.model.as_str());
                     summarize_and_send(&config, send_id, group_name, &stored, model, &config.scheduled_summary_prompt, &archive);
                 }
             }
