@@ -219,6 +219,12 @@ fn format_search_results(body: &str) -> Result<String, String> {
     }
 }
 
+/// Expose format_search_results for testing from other modules.
+#[cfg(test)]
+pub fn format_search_results_for_test(body: &str) -> String {
+    format_search_results(body).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +233,36 @@ mod tests {
     fn test_format_search_results_empty() {
         let result = format_search_results("{}").unwrap();
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn test_format_search_results_with_items() {
+        let body = r#"{"status":true,"collection_names":["web"],"items":[{"link":"https://example.com","title":"Example","snippet":"A snippet here"},{"link":"https://other.com","title":"Other","snippet":"Other snippet"}]}"#;
+        let result = format_search_results(body).unwrap();
+        assert!(result.contains("**1. Example**"));
+        assert!(result.contains("https://example.com"));
+        assert!(result.contains("A snippet here"));
+        assert!(result.contains("**2. Other**"));
+    }
+
+    #[test]
+    fn test_format_search_results_limits_to_5() {
+        let mut items = String::new();
+        for i in 0..10 {
+            if i > 0 { items.push(','); }
+            items.push_str(&format!(r#"{{"link":"https://x.com/{}","title":"Result {}","snippet":"Snippet {}"}}"#, i, i, i));
+        }
+        let body = format!(r#"{{"status":true,"items":[{}]}}"#, items);
+        let result = format_search_results(&body).unwrap();
+        assert!(result.contains("**5."));
+        assert!(!result.contains("**6."));
+    }
+
+    #[test]
+    fn test_format_search_results_no_items_key() {
+        let body = r#"{"status":true,"collection_names":["test"]}"#;
+        let result = format_search_results(body).unwrap();
+        // Falls back to raw body
+        assert!(result.contains("status"));
     }
 }

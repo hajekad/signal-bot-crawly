@@ -67,6 +67,8 @@ fn main() {
     let mut store: HashMap<String, Vec<signal::Message>> = HashMap::new();
     // Per-group model overrides: internal_id -> model name
     let mut group_models: HashMap<String, String> = HashMap::new();
+    // Message archive: timestamp -> message (for following reply chains)
+    let mut archive: HashMap<i64, signal::Message> = HashMap::new();
     let mut next_scheduled = scheduler::next_run_timestamp(config.schedule);
     let mut groups = groups;
     let mut last_group_refresh: u64 = 0;
@@ -119,6 +121,9 @@ fn main() {
         let mut commands: Vec<(String, Command)> = Vec::new();
 
         for msg in messages {
+            // Archive every message for reply chain lookups
+            archive.insert(msg.timestamp, msg.clone());
+
             if let Some(group_id) = msg.group_id.clone() {
                 if msg.mentions_bot && msg.sender != config.signal_phone {
                     let cmd = extract_command(&msg.text, &msg.quote);
@@ -126,6 +131,15 @@ fn main() {
                     continue;
                 }
                 store.entry(group_id).or_default().push(msg);
+            }
+        }
+
+        // Cap archive size to prevent unbounded growth (keep last ~10k messages)
+        if archive.len() > 12000 {
+            let mut timestamps: Vec<i64> = archive.keys().copied().collect();
+            timestamps.sort();
+            for ts in timestamps.iter().take(archive.len() - 10000) {
+                archive.remove(ts);
             }
         }
 
@@ -246,7 +260,7 @@ fn main() {
                     let model = group_models.get(internal_id).unwrap_or(&config.model);
                     if let Some(stored) = store.remove(internal_id) {
                         println!("Triggered summarization for '{}'", group_name);
-                        summarize_and_send(&config, send_id, group_name, &stored, model);
+                        summarize_and_send(&config, send_id, group_name, &stored, model, &archive);
                     } else {
                         let _ = signal::send_message(
                             &config.signal_api_host,
@@ -266,10 +280,11 @@ fn main() {
                     println!("Image gen requested in '{}': {}", group_name, prompt);
                     handle_imagine(&config, send_id, prompt);
                 }
-                Command::FactCheck { claim } => {
+                Command::FactCheck { claim, ref quote } => {
                     let model = group_models.get(internal_id).unwrap_or(&config.model);
-                    println!("Fact-check requested in '{}': {}", group_name, claim);
-                    handle_fact_check(&config, send_id, claim, model);
+                    let chain = build_reply_chain(quote, &archive, 50);
+                    println!("Fact-check requested in '{}' (chain: {} msgs): {}", group_name, chain.len(), claim);
+                    handle_fact_check(&config, send_id, &chain, model);
                 }
                 Command::FactCheckUsage => {
                     let _ = signal::send_message(
@@ -303,7 +318,7 @@ fn main() {
                     let send_id = group.map(|g| g.id.as_str()).unwrap_or(internal_id.as_str());
                     let group_name = group.map(|g| g.name.as_str()).unwrap_or("unknown");
                     let model = group_models.get(&internal_id).unwrap_or(&config.model);
-                    summarize_and_send(&config, send_id, group_name, &stored, model);
+                    summarize_and_send(&config, send_id, group_name, &stored, model, &archive);
                 }
             }
             next_scheduled = scheduler::next_run_timestamp(config.schedule);
@@ -316,7 +331,7 @@ enum Command {
     Summarize,
     Search(String),
     Imagine(String),
-    FactCheck { claim: String },
+    FactCheck { claim: String, quote: signal::Quote },
     FactCheckUsage,
     Models,
     Use(String),
@@ -340,7 +355,7 @@ fn extract_command(text: &str, quote: &Option<signal::Quote>) -> Command {
     // Fact-check: requires both a reply AND a trigger phrase
     if is_fact_check_phrase(&lower) {
         return match quote {
-            Some(q) => Command::FactCheck { claim: q.text.clone() },
+            Some(q) => Command::FactCheck { claim: q.text.clone(), quote: q.clone() },
             None => Command::FactCheckUsage,
         };
     }
@@ -360,6 +375,54 @@ fn extract_command(text: &str, quote: &Option<signal::Quote>) -> Command {
     } else {
         Command::Unknown
     }
+}
+
+/// Build a reply chain by following quote.id backwards through the archive.
+/// Returns messages in chronological order (oldest first), up to max_depth.
+fn build_reply_chain(
+    start_quote: &signal::Quote,
+    archive: &HashMap<i64, signal::Message>,
+    max_depth: usize,
+) -> Vec<String> {
+    let mut chain = Vec::new();
+
+    // Start: try to get the quoted message from archive (has full sender info)
+    // If not in archive, fall back to the quote's embedded text
+    let mut current_id = start_quote.id;
+    if current_id != 0 {
+        if let Some(msg) = archive.get(&current_id) {
+            let name = msg.sender_name.as_deref().unwrap_or(msg.sender.as_str());
+            chain.push(format!("{}: {}", name, msg.text));
+            current_id = msg.quote.as_ref().map(|q| q.id).unwrap_or(0);
+        } else {
+            // Not in archive — use quote's embedded data
+            chain.push(format!("{}: {}", start_quote.author, start_quote.text));
+            current_id = 0;
+        }
+    } else {
+        chain.push(format!("{}: {}", start_quote.author, start_quote.text));
+    }
+
+    // Follow the chain backwards through the archive
+    for _ in 0..max_depth {
+        if current_id == 0 {
+            break;
+        }
+        if let Some(parent_msg) = archive.get(&current_id) {
+            let name = parent_msg
+                .sender_name
+                .as_deref()
+                .unwrap_or(parent_msg.sender.as_str());
+            chain.push(format!("{}: {}", name, parent_msg.text));
+            current_id = parent_msg.quote.as_ref().map(|q| q.id).unwrap_or(0);
+        } else {
+            break;
+        }
+    }
+
+    // Reverse so oldest message is first
+    chain.reverse();
+    chain
 }
 
 /// Strip a command prefix and return the argument, preserving original case.
@@ -409,13 +472,14 @@ fn summarize_and_send(
     group_name: &str,
     messages: &[signal::Message],
     model: &str,
+    archive: &HashMap<i64, signal::Message>,
 ) {
     if messages.is_empty() {
         return;
     }
 
     println!("Summarizing {} message(s) in '{}' with model '{}'", messages.len(), group_name, model);
-    let transcript = format_transcript(messages);
+    let transcript = format_transcript(messages, archive);
     let user_prompt = format!(
         "Summarize these messages from the group \"{}\":\n\n{}",
         group_name, transcript
@@ -579,13 +643,23 @@ fn handle_imagine(config: &config::Config, group_id: &str, prompt: &str) {
     }
 }
 
-fn handle_fact_check(config: &config::Config, group_id: &str, claim: &str, model: &str) {
-    // Step 1: Search the web for the claim
+fn handle_fact_check(config: &config::Config, group_id: &str, chain: &[String], model: &str) {
+    // Build the full thread as context
+    let thread_text = chain.join("\n");
+
+    // Step 1: Search the web using the entire thread as the query
+    // Strip "Name: " prefixes to get just the content for searching
+    let search_query: String = chain
+        .iter()
+        .filter_map(|line| line.split_once(": ").map(|(_, text)| text))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let search_query: String = search_query.chars().take(500).collect();
     let search_context = match webui::web_search(
         &config.webui_host,
         config.webui_port,
         &config.webui_api_key,
-        claim,
+        &search_query,
     ) {
         Ok(results) => results,
         Err(e) => {
@@ -594,27 +668,32 @@ fn handle_fact_check(config: &config::Config, group_id: &str, claim: &str, model
         }
     };
 
-    // Step 2: Ask the LLM to fact-check with the search results as context
+    // Step 2: Ask the LLM to fact-check the entire thread
     let prompt = if search_context.is_empty() {
         format!(
-            "Fact-check the following claim using your knowledge. Be honest if you're uncertain.\n\n\
-             **Claim:** \"{}\"\n\n\
-             Respond with:\n\
-             1. A verdict: TRUE, FALSE, PARTIALLY TRUE, UNVERIFIABLE, or OPINION\n\
-             2. A brief explanation (2-3 sentences)\n\
-             3. Key evidence or reasoning",
-            claim
+            "Fact-check this conversation. Go through each message and check every \
+             verifiable claim. Skip pure opinions or reactions that can't be checked.\n\n\
+             **Conversation:**\n{}\n\n\
+             For each checkable claim, give:\n\
+             - The claim (short quote)\n\
+             - Verdict: TRUE / FALSE / PARTIALLY TRUE / UNVERIFIABLE\n\
+             - One sentence of reasoning\n\n\
+             Be concise. No preamble.",
+            thread_text
         )
     } else {
         format!(
-            "Fact-check the following claim using the web search results provided.\n\n\
-             **Claim:** \"{}\"\n\n\
+            "Fact-check this conversation using the search results below. \
+             Go through each message and check every verifiable claim. \
+             Skip pure opinions or reactions that can't be checked.\n\n\
+             **Conversation:**\n{}\n\n\
              **Search Results:**\n{}\n\n\
-             Respond with:\n\
-             1. A verdict: TRUE, FALSE, PARTIALLY TRUE, UNVERIFIABLE, or OPINION\n\
-             2. A brief explanation (2-3 sentences)\n\
-             3. Key evidence with sources",
-            claim, search_context
+             For each checkable claim, give:\n\
+             - The claim (short quote)\n\
+             - Verdict: TRUE / FALSE / PARTIALLY TRUE / UNVERIFIABLE\n\
+             - One sentence of reasoning, with source if available\n\n\
+             Be concise. No preamble.",
+            thread_text, search_context
         )
     };
 
@@ -623,8 +702,8 @@ fn handle_fact_check(config: &config::Config, group_id: &str, claim: &str, model
         config.webui_port,
         &config.webui_api_key,
         model,
-        "You are a fact-checker. Analyze claims objectively. Always provide a clear verdict. \
-         Distinguish facts from opinions. Cite sources when available. Be concise.",
+        "You are a concise fact-checker. Analyze every verifiable claim in a conversation. \
+         Give a short verdict for each. Skip opinions and reactions. Cite sources when available.",
         &prompt,
     ) {
         Ok(a) => a,
@@ -641,13 +720,9 @@ fn handle_fact_check(config: &config::Config, group_id: &str, claim: &str, model
         }
     };
 
-    // Truncate claim for display
-    let short_claim: String = claim.chars().take(100).collect();
-    let ellipsis = if claim.len() > 100 { "..." } else { "" };
-
     let message = format!(
-        "**Fact Check**\n\n> _{}{}_\n\n{}",
-        short_claim, ellipsis, analysis
+        "**Fact Check** _({} messages in thread)_\n\n{}",
+        chain.len(), analysis
     );
 
     let _ = signal::send_message(
@@ -659,12 +734,359 @@ fn handle_fact_check(config: &config::Config, group_id: &str, claim: &str, model
     );
 }
 
-fn format_transcript(messages: &[signal::Message]) -> String {
+fn format_transcript(messages: &[signal::Message], archive: &HashMap<i64, signal::Message>) -> String {
     let mut lines = Vec::with_capacity(messages.len());
     for msg in messages {
         let time = scheduler::format_timestamp(msg.timestamp);
         let name = msg.sender_name.as_deref().unwrap_or(msg.sender.as_str());
-        lines.push(format!("[{}] {}: {}", time, name, msg.text));
+
+        // If this message is a reply, show what it's replying to
+        if let Some(quote) = &msg.quote {
+            // Try to get the quoted author's display name from archive
+            let quoted_name = if quote.id != 0 {
+                archive
+                    .get(&quote.id)
+                    .and_then(|m| m.sender_name.as_deref())
+                    .unwrap_or(quote.author.as_str())
+            } else {
+                quote.author.as_str()
+            };
+            let short_quote: String = quote.text.chars().take(80).collect();
+            let ellipsis = if quote.text.len() > 80 { "..." } else { "" };
+            lines.push(format!(
+                "[{}] {} (replying to {}: \"{}{}\"): {}",
+                time, name, quoted_name, short_quote, ellipsis, msg.text
+            ));
+        } else {
+            lines.push(format!("[{}] {}: {}", time, name, msg.text));
+        }
     }
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_msg(sender: &str, text: &str, ts: i64) -> signal::Message {
+        signal::Message {
+            sender: sender.to_string(),
+            sender_name: Some(sender.to_string()),
+            text: text.to_string(),
+            timestamp: ts,
+            group_id: Some("group.test".to_string()),
+            mentions_bot: false,
+            quote: None,
+        }
+    }
+
+    fn make_reply(sender: &str, text: &str, ts: i64, quote_id: i64, quote_author: &str, quote_text: &str) -> signal::Message {
+        signal::Message {
+            sender: sender.to_string(),
+            sender_name: Some(sender.to_string()),
+            text: text.to_string(),
+            timestamp: ts,
+            group_id: Some("group.test".to_string()),
+            mentions_bot: false,
+            quote: Some(signal::Quote {
+                id: quote_id,
+                text: quote_text.to_string(),
+                author: quote_author.to_string(),
+            }),
+        }
+    }
+
+    // ── extract_command tests ──
+
+    #[test]
+    fn test_cmd_help() {
+        assert!(matches!(extract_command("help", &None), Command::Help));
+        assert!(matches!(extract_command("  help  ", &None), Command::Help));
+    }
+
+    #[test]
+    fn test_cmd_summarize() {
+        assert!(matches!(extract_command("summarize", &None), Command::Summarize));
+        assert!(matches!(extract_command("summary", &None), Command::Summarize));
+    }
+
+    #[test]
+    fn test_cmd_search() {
+        match extract_command("search rust programming", &None) {
+            Command::Search(q) => assert_eq!(q, "rust programming"),
+            _ => panic!("expected Search"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_search_no_query_is_unknown() {
+        assert!(matches!(extract_command("search", &None), Command::Unknown));
+    }
+
+    #[test]
+    fn test_cmd_imagine() {
+        match extract_command("imagine a sunset over mountains", &None) {
+            Command::Imagine(p) => assert_eq!(p, "a sunset over mountains"),
+            _ => panic!("expected Imagine"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_models() {
+        assert!(matches!(extract_command("models", &None), Command::Models));
+        assert!(matches!(extract_command("list-models", &None), Command::Models));
+        assert!(matches!(extract_command("list models", &None), Command::Models));
+    }
+
+    #[test]
+    fn test_cmd_use() {
+        match extract_command("use llama3:8b", &None) {
+            Command::Use(m) => assert_eq!(m, "llama3:8b"),
+            _ => panic!("expected Use"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_unknown() {
+        assert!(matches!(extract_command("blah blah", &None), Command::Unknown));
+    }
+
+    #[test]
+    fn test_cmd_strips_mention_placeholder() {
+        assert!(matches!(extract_command("\u{FFFC} help", &None), Command::Help));
+        assert!(matches!(extract_command("\u{FFFC}  summarize", &None), Command::Summarize));
+    }
+
+    #[test]
+    fn test_cmd_fact_check_with_reply() {
+        let quote = Some(signal::Quote {
+            id: 100,
+            text: "The earth is flat".to_string(),
+            author: "+123".to_string(),
+        });
+        match extract_command("is this true?", &quote) {
+            Command::FactCheck { claim, .. } => assert_eq!(claim, "The earth is flat"),
+            _ => panic!("expected FactCheck"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_fact_check_without_reply_shows_usage() {
+        assert!(matches!(
+            extract_command("is this true?", &None),
+            Command::FactCheckUsage
+        ));
+    }
+
+    #[test]
+    fn test_cmd_fact_check_only_exact_phrase() {
+        // "true" alone should NOT trigger fact-check
+        let quote = Some(signal::Quote {
+            id: 100,
+            text: "Some claim".to_string(),
+            author: "+123".to_string(),
+        });
+        // "that's true" should NOT trigger — only "is this true"
+        assert!(matches!(extract_command("that's true", &quote), Command::Unknown));
+    }
+
+    #[test]
+    fn test_cmd_reply_with_other_command_not_fact_check() {
+        let quote = Some(signal::Quote {
+            id: 100,
+            text: "Some message".to_string(),
+            author: "+123".to_string(),
+        });
+        // Other commands should still work even when replying
+        assert!(matches!(extract_command("help", &quote), Command::Help));
+        assert!(matches!(extract_command("summarize", &quote), Command::Summarize));
+    }
+
+    // ── build_reply_chain tests ──
+
+    #[test]
+    fn test_reply_chain_single_message() {
+        let archive: HashMap<i64, signal::Message> = HashMap::new();
+        let quote = signal::Quote {
+            id: 0,
+            text: "Original claim".to_string(),
+            author: "Alice".to_string(),
+        };
+
+        let chain = build_reply_chain(&quote, &archive, 50);
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0], "Alice: Original claim");
+    }
+
+    #[test]
+    fn test_reply_chain_two_deep() {
+        let mut archive: HashMap<i64, signal::Message> = HashMap::new();
+
+        // Alice sends "First message" at ts=1000
+        archive.insert(1000, make_msg("Alice", "First message", 1000));
+
+        // Bob replies to Alice. Signal quote = {id: 1000, author: "Alice", text: "First message"}
+        let quote = signal::Quote {
+            id: 1000,
+            text: "First message".to_string(),
+            author: "Alice".to_string(),
+        };
+
+        let chain = build_reply_chain(&quote, &archive, 50);
+        // Only 1 entry — the quoted message from archive (no parent beyond it)
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0], "Alice: First message");
+    }
+
+    #[test]
+    fn test_reply_chain_three_deep() {
+        let mut archive: HashMap<i64, signal::Message> = HashMap::new();
+
+        // Alice: "Root message" at ts=1000
+        archive.insert(1000, make_msg("Alice", "Root message", 1000));
+
+        // Bob replies to Alice at ts=2000
+        archive.insert(2000, make_reply("Bob", "Reply to Alice", 2000, 1000, "Alice", "Root message"));
+
+        // Charlie replies to Bob. Signal quote = {id: 2000, author: "Bob", text: "Reply to Alice"}
+        let quote = signal::Quote {
+            id: 2000,
+            text: "Reply to Alice".to_string(),
+            author: "Bob".to_string(),
+        };
+
+        let chain = build_reply_chain(&quote, &archive, 50);
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0], "Alice: Root message");   // followed from Bob's quote
+        assert_eq!(chain[1], "Bob: Reply to Alice");   // the quoted message itself
+    }
+
+    #[test]
+    fn test_reply_chain_respects_max_depth() {
+        let mut archive: HashMap<i64, signal::Message> = HashMap::new();
+
+        // Build a chain of 10 messages
+        archive.insert(1000, make_msg("User", "Msg 1", 1000));
+        for i in 1..10 {
+            let ts = 1000 + i * 1000;
+            let prev_ts = ts - 1000;
+            archive.insert(ts, make_reply("User", &format!("Msg {}", i + 1), ts, prev_ts, "User", &format!("Msg {}", i)));
+        }
+
+        let quote = signal::Quote {
+            id: 10000,
+            text: "Msg 11".to_string(),
+            author: "User".to_string(),
+        };
+
+        // Limit to 3
+        let chain = build_reply_chain(&quote, &archive, 3);
+        assert!(chain.len() <= 4); // quote itself + max 3 parents
+    }
+
+    #[test]
+    fn test_reply_chain_missing_parent_stops() {
+        let archive: HashMap<i64, signal::Message> = HashMap::new();
+
+        // Quote references a message not in archive
+        let quote = signal::Quote {
+            id: 99999,
+            text: "Reply to unknown".to_string(),
+            author: "Bob".to_string(),
+        };
+
+        let chain = build_reply_chain(&quote, &archive, 50);
+        // Should still have the quote itself
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0], "Bob: Reply to unknown");
+    }
+
+    // ── format_transcript tests ──
+
+    #[test]
+    fn test_transcript_basic() {
+        let archive: HashMap<i64, signal::Message> = HashMap::new();
+        let msgs = vec![
+            make_msg("Alice", "Hello", 1710513000000),
+            make_msg("Bob", "Hi there", 1710513060000),
+        ];
+
+        let transcript = format_transcript(&msgs, &archive);
+        assert!(transcript.contains("Alice: Hello"));
+        assert!(transcript.contains("Bob: Hi there"));
+    }
+
+    #[test]
+    fn test_transcript_with_reply_context() {
+        let mut archive: HashMap<i64, signal::Message> = HashMap::new();
+        let original = make_msg("Alice", "I think Rust is great", 1000);
+        archive.insert(1000, original);
+
+        let reply = make_reply("Bob", "Totally agree", 2000, 1000, "Alice", "I think Rust is great");
+        let msgs = vec![reply];
+
+        let transcript = format_transcript(&msgs, &archive);
+        assert!(transcript.contains("replying to Alice"));
+        assert!(transcript.contains("I think Rust is great"));
+        assert!(transcript.contains("Totally agree"));
+    }
+
+    #[test]
+    fn test_transcript_reply_truncates_long_quotes() {
+        let archive: HashMap<i64, signal::Message> = HashMap::new();
+        let long_text = "a".repeat(200);
+        let reply = make_reply("Bob", "Short reply", 2000, 1000, "Alice", &long_text);
+        let msgs = vec![reply];
+
+        let transcript = format_transcript(&msgs, &archive);
+        assert!(transcript.contains("..."));
+        // Should be truncated to 80 chars
+        assert!(!transcript.contains(&"a".repeat(200)));
+    }
+
+    #[test]
+    fn test_transcript_reply_resolves_display_name_from_archive() {
+        let mut archive: HashMap<i64, signal::Message> = HashMap::new();
+        let mut original = make_msg("uuid-1234", "Original", 1000);
+        original.sender_name = Some("Alice".to_string());
+        archive.insert(1000, original);
+
+        // Reply where author is a UUID, but archive has display name
+        let reply = make_reply("Bob", "Reply", 2000, 1000, "uuid-1234", "Original");
+        let msgs = vec![reply];
+
+        let transcript = format_transcript(&msgs, &archive);
+        assert!(transcript.contains("replying to Alice"));
+        assert!(!transcript.contains("uuid-1234"));
+    }
+
+    // ── is_fact_check_phrase tests ──
+
+    #[test]
+    fn test_fact_check_exact_phrase() {
+        assert!(is_fact_check_phrase("is this true?"));
+        assert!(is_fact_check_phrase("is this true"));
+    }
+
+    #[test]
+    fn test_fact_check_rejects_similar_phrases() {
+        assert!(!is_fact_check_phrase("is that true"));
+        assert!(!is_fact_check_phrase("true"));
+        assert!(!is_fact_check_phrase("is this really true"));
+        assert!(!is_fact_check_phrase("fact check"));
+        assert!(!is_fact_check_phrase(""));
+    }
+
+    // ── webui search result formatting ──
+
+    #[test]
+    fn test_search_results_formatting() {
+        let body = r#"{"status":true,"collection_names":["web-search"],"items":[{"link":"https://example.com","title":"Example Title","snippet":"This is a snippet of text"},{"link":"https://other.com","title":"Other Result","snippet":"Another snippet"}]}"#;
+
+        let result = webui::format_search_results_for_test(body);
+        assert!(result.contains("Example Title"));
+        assert!(result.contains("https://example.com"));
+        assert!(result.contains("This is a snippet"));
+        assert!(result.contains("Other Result"));
+    }
 }

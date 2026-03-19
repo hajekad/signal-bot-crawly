@@ -10,14 +10,15 @@ pub struct Group {
 }
 
 /// A quoted/replied-to message.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Quote {
+    pub id: i64,
     pub text: String,
     pub author: String,
 }
 
 /// A received message from Signal.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Message {
     pub sender: String,
     pub sender_name: Option<String>,
@@ -150,12 +151,14 @@ fn extract_quote(envelope_json: &str) -> Option<Quote> {
         return None;
     }
 
+    let id = json::extract_number(quote_obj, "id").unwrap_or(0);
+
     let author = json::extract_string(quote_obj, "authorNumber")
         .or_else(|| json::extract_string(quote_obj, "authorUuid"))
         .or_else(|| json::extract_string(quote_obj, "author"))
         .unwrap_or_else(|| "unknown".to_string());
 
-    Some(Quote { text, author })
+    Some(Quote { id, text, author })
 }
 
 /// Check if the envelope's mentions array references the bot.
@@ -535,6 +538,138 @@ mod tests {
         let messages = parse_messages(body, "00000000-0000-0000-0000-000000000099");
         assert_eq!(messages.len(), 1);
         assert!(!messages[0].mentions_bot);
+    }
+
+    #[test]
+    fn test_parse_messages_with_quote() {
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "+1987654321",
+                    "sourceName": "Bob",
+                    "timestamp": 1612041800000,
+                    "dataMessage": {
+                        "timestamp": 1612041800000,
+                        "message": "That's not right",
+                        "quote": {
+                            "id": 1612041718367,
+                            "authorNumber": "+1555000111",
+                            "authorUuid": "aaaa-bbbb",
+                            "text": "The earth is flat"
+                        },
+                        "groupInfo": {"groupId": "group.abc123", "type": "DELIVER"}
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "+0000000000");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].text, "That's not right");
+        let quote = messages[0].quote.as_ref().unwrap();
+        assert_eq!(quote.id, 1612041718367);
+        assert_eq!(quote.text, "The earth is flat");
+        assert_eq!(quote.author, "+1555000111");
+    }
+
+    #[test]
+    fn test_parse_messages_with_quote_uuid_author() {
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "uuid-sender",
+                    "timestamp": 1612041800000,
+                    "dataMessage": {
+                        "timestamp": 1612041800000,
+                        "message": "Really?",
+                        "quote": {
+                            "id": 1612041718367,
+                            "authorUuid": "uuid-original-author",
+                            "text": "Some claim"
+                        }
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "+0000000000");
+        let quote = messages[0].quote.as_ref().unwrap();
+        assert_eq!(quote.author, "uuid-original-author");
+    }
+
+    #[test]
+    fn test_parse_messages_no_quote() {
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "+1987654321",
+                    "timestamp": 1612041800000,
+                    "dataMessage": {
+                        "timestamp": 1612041800000,
+                        "message": "Just a normal message"
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "+0000000000");
+        assert!(messages[0].quote.is_none());
+    }
+
+    #[test]
+    fn test_parse_messages_quote_empty_text_ignored() {
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "+1987654321",
+                    "timestamp": 1612041800000,
+                    "dataMessage": {
+                        "timestamp": 1612041800000,
+                        "message": "reply",
+                        "quote": {
+                            "id": 1612041718367,
+                            "authorNumber": "+1555000111",
+                            "text": ""
+                        }
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "+0000000000");
+        assert!(messages[0].quote.is_none());
+    }
+
+    #[test]
+    fn test_parse_messages_quote_with_mention_and_reply() {
+        // Real-world scenario: user replies to a message and @mentions the bot
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "user-uuid",
+                    "sourceName": "Alice",
+                    "timestamp": 1612041900000,
+                    "dataMessage": {
+                        "timestamp": 1612041900000,
+                        "message": "\uFFFC is this true?",
+                        "mentions": [{"start": 0, "length": 1, "uuid": "bot-uuid-123"}],
+                        "quote": {
+                            "id": 1612041800000,
+                            "authorNumber": "+1555000111",
+                            "text": "Vaccines cause autism"
+                        },
+                        "groupInfo": {"groupId": "group.abc123", "type": "DELIVER"}
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "bot-uuid-123");
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].mentions_bot);
+        let quote = messages[0].quote.as_ref().unwrap();
+        assert_eq!(quote.text, "Vaccines cause autism");
+        assert_eq!(quote.id, 1612041800000);
     }
 
     #[test]
