@@ -142,7 +142,12 @@ fn get_test_model() -> Option<String> {
         if !name.contains("embed") {
             return Some(name.to_string());
         }
-        search_from += idx + 6 + (after_key.len() - after_colon.len()) + (after_colon.len() - trimmed.len()) + end + 1;
+        search_from += idx
+            + 6
+            + (after_key.len() - after_colon.len())
+            + (after_colon.len() - trimmed.len())
+            + end
+            + 1;
     }
 }
 
@@ -182,7 +187,10 @@ fn test_ollama_chat_summarization() {
     }
     let model = match get_test_model() {
         Some(m) => m,
-        None => { eprintln!("Skipping: no models available"); return; }
+        None => {
+            eprintln!("Skipping: no models available");
+            return;
+        }
     };
 
     let transcript = "[Alice]: We need to pick a database for the new project.\n\
@@ -216,7 +224,10 @@ fn test_ollama_chat_with_special_characters() {
     }
     let model = match get_test_model() {
         Some(m) => m,
-        None => { eprintln!("Skipping: no models available"); return; }
+        None => {
+            eprintln!("Skipping: no models available");
+            return;
+        }
     };
 
     let transcript = r#"[Alice]: Check the "config.json" file
@@ -234,8 +245,7 @@ between these lines"#;
     let (status, response) = http_post("127.0.0.1", 11434, "/api/chat", &body).unwrap();
     assert_eq!(status, 200);
 
-    let content = extract_string(&response, "content")
-        .expect("Failed to extract content");
+    let content = extract_string(&response, "content").expect("Failed to extract content");
     assert!(!content.is_empty());
     eprintln!("Special chars summary: {}", content);
 }
@@ -248,7 +258,10 @@ fn test_ollama_stream_false_returns_complete_json() {
     }
     let model = match get_test_model() {
         Some(m) => m,
-        None => { eprintln!("Skipping: no models available"); return; }
+        None => {
+            eprintln!("Skipping: no models available");
+            return;
+        }
     };
 
     let body = format!(

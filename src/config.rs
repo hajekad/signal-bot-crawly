@@ -29,8 +29,10 @@ pub enum Schedule {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
-        let signal_url = env::var("SIGNAL_API_URL").unwrap_or_else(|_| "http://signal-api:8080".to_string());
-        let webui_url = env::var("OPEN_WEBUI_URL").unwrap_or_else(|_| "http://open-webui:8080".to_string());
+        let signal_url =
+            env::var("SIGNAL_API_URL").unwrap_or_else(|_| "http://signal-api:8080".to_string());
+        let webui_url =
+            env::var("OPEN_WEBUI_URL").unwrap_or_else(|_| "http://open-webui:8080".to_string());
 
         let (signal_api_host, signal_api_port) = crate::http::parse_url(&signal_url)?;
         let (webui_host, webui_port) = crate::http::parse_url(&webui_url)?;
@@ -44,11 +46,20 @@ impl Config {
         // Bot name: try env var, otherwise resolved from Signal profile at startup
         let bot_name = env::var("BOT_NAME").unwrap_or_default();
 
-        let schedule = match env::var("SCHEDULE").unwrap_or_else(|_| "weekly".to_string()).to_lowercase().as_str() {
+        let schedule = match env::var("SCHEDULE")
+            .unwrap_or_else(|_| "weekly".to_string())
+            .to_lowercase()
+            .as_str()
+        {
             "daily" => Schedule::Daily,
             "weekly" => Schedule::Weekly,
             "monthly" => Schedule::Monthly,
-            other => return Err(format!("Invalid SCHEDULE '{}': must be daily, weekly, or monthly", other)),
+            other => {
+                return Err(format!(
+                    "Invalid SCHEDULE '{}': must be daily, weekly, or monthly",
+                    other
+                ))
+            }
         };
 
         let summary_prompt = env::var("SUMMARY_PROMPT").unwrap_or_else(|_| {
@@ -170,15 +181,22 @@ impl Config {
         let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gpt-oss:20b".to_string());
 
         let poll_interval = match env::var("POLL_INTERVAL") {
-            Ok(val) => val.parse::<u64>().map_err(|_| format!("Invalid POLL_INTERVAL '{}': must be a number", val))?,
+            Ok(val) => val
+                .parse::<u64>()
+                .map_err(|_| format!("Invalid POLL_INTERVAL '{}': must be a number", val))?,
             Err(_) => 10,
         };
-        if poll_interval < 1 || poll_interval > 300 {
-            return Err(format!("POLL_INTERVAL must be between 1 and 300 seconds, got {}", poll_interval));
+        if !(1..=300).contains(&poll_interval) {
+            return Err(format!(
+                "POLL_INTERVAL must be between 1 and 300 seconds, got {}",
+                poll_interval
+            ));
         }
 
         let group_refresh_interval = match env::var("GROUP_REFRESH_INTERVAL") {
-            Ok(val) => val.parse::<u64>().map_err(|_| format!("Invalid GROUP_REFRESH_INTERVAL '{}': must be a number", val))?,
+            Ok(val) => val.parse::<u64>().map_err(|_| {
+                format!("Invalid GROUP_REFRESH_INTERVAL '{}': must be a number", val)
+            })?,
             Err(_) => 300,
         };
 

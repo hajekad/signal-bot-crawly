@@ -9,7 +9,9 @@ pub fn parse_url(url: &str) -> Result<(String, u16), String> {
         .ok_or_else(|| format!("URL must start with http://: {}", url))?;
 
     let (host, port) = if let Some((h, p)) = stripped.split_once(':') {
-        let port: u16 = p.parse().map_err(|_| format!("Invalid port in URL: {}", url))?;
+        let port: u16 = p
+            .parse()
+            .map_err(|_| format!("Invalid port in URL: {}", url))?;
         (h.to_string(), port)
     } else {
         (stripped.to_string(), 80)
@@ -20,8 +22,8 @@ pub fn parse_url(url: &str) -> Result<(String, u16), String> {
 
 pub fn http_get(host: &str, port: u16, path: &str) -> Result<(u16, String), String> {
     let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    let mut stream =
+        TcpStream::connect(&addr).map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
@@ -48,8 +50,8 @@ pub fn http_post(host: &str, port: u16, path: &str, json: &str) -> Result<(u16, 
 
 pub fn http_put(host: &str, port: u16, path: &str, json: &str) -> Result<(u16, String), String> {
     let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    let mut stream =
+        TcpStream::connect(&addr).map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
@@ -70,10 +72,16 @@ pub fn http_put(host: &str, port: u16, path: &str, json: &str) -> Result<(u16, S
     parse_http_response(&response)
 }
 
-pub fn http_post_with_auth(host: &str, port: u16, path: &str, json: &str, api_key: Option<&str>) -> Result<(u16, String), String> {
+pub fn http_post_with_auth(
+    host: &str,
+    port: u16,
+    path: &str,
+    json: &str,
+    api_key: Option<&str>,
+) -> Result<(u16, String), String> {
     let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    let mut stream =
+        TcpStream::connect(&addr).map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
     // Per-read timeout; total wait is handled by retry loop below
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
@@ -98,10 +106,15 @@ pub fn http_post_with_auth(host: &str, port: u16, path: &str, json: &str, api_ke
     parse_http_response_bytes(&response)
 }
 
-pub fn http_get_with_auth(host: &str, port: u16, path: &str, api_key: &str) -> Result<(u16, String), String> {
+pub fn http_get_with_auth(
+    host: &str,
+    port: u16,
+    path: &str,
+    api_key: &str,
+) -> Result<(u16, String), String> {
     let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    let mut stream =
+        TcpStream::connect(&addr).map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
@@ -135,8 +148,10 @@ fn read_with_retry(stream: &mut TcpStream, max_secs: u64) -> Result<Vec<u8>, Str
             Ok(n) => {
                 response.extend_from_slice(&buf[..n]);
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 // Check total elapsed time
                 let elapsed = start.elapsed().unwrap_or_default().as_secs();
                 if elapsed >= max_secs {
@@ -172,10 +187,9 @@ fn parse_http_response_bytes(response: &[u8]) -> Result<(u16, String), String> {
     let body = &response[sep_pos + 4..];
 
     // Handle chunked transfer encoding
-    let is_chunked = headers
-        .lines()
-        .any(|l| l.to_lowercase().starts_with("transfer-encoding:")
-             && l.to_lowercase().contains("chunked"));
+    let is_chunked = headers.lines().any(|l| {
+        l.to_lowercase().starts_with("transfer-encoding:") && l.to_lowercase().contains("chunked")
+    });
 
     let decoded_body = if is_chunked {
         decode_chunked(body)?
@@ -208,8 +222,7 @@ pub(crate) fn decode_chunked(body: &[u8]) -> Result<Vec<u8>, String> {
         }
 
         // Find end of chunk size line
-        let line_end = find_crlf(body, pos)
-            .ok_or("Invalid chunked encoding: missing size line")?;
+        let line_end = find_crlf(body, pos).ok_or("Invalid chunked encoding: missing size line")?;
 
         let size_str = std::str::from_utf8(&body[pos..line_end])
             .map_err(|_| "Invalid chunk size encoding")?
@@ -344,7 +357,8 @@ mod tests {
     #[test]
     fn test_chunked_hex_size() {
         // 0a = 10 in hex
-        let raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\n0123456789\r\n0\r\n\r\n";
+        let raw =
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\na\r\n0123456789\r\n0\r\n\r\n";
         let (status, body) = parse_http_response(raw).unwrap();
         assert_eq!(status, 200);
         assert_eq!(body, "0123456789");

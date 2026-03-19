@@ -43,12 +43,20 @@ pub fn list_groups(host: &str, port: u16, phone: &str) -> Result<Vec<Group>, Str
 
 /// Receive (consume) all pending messages for the phone number.
 /// `bot_id` is the identifier (UUID or phone) used to detect bot mentions.
-pub fn receive_messages(host: &str, port: u16, phone: &str, bot_id: &str) -> Result<Vec<Message>, String> {
+pub fn receive_messages(
+    host: &str,
+    port: u16,
+    phone: &str,
+    bot_id: &str,
+) -> Result<Vec<Message>, String> {
     let path = format!("/v1/receive/{}", phone);
     let (status, body) = http::http_get(host, port, &path)?;
 
     if status != 200 {
-        return Err(format!("Receive messages failed (HTTP {}): {}", status, body));
+        return Err(format!(
+            "Receive messages failed (HTTP {}): {}",
+            status, body
+        ));
     }
 
     Ok(parse_messages(&body, bot_id))
@@ -59,9 +67,16 @@ pub fn parse_groups(body: &str) -> Vec<Group> {
     let objects = json::extract_array_objects(body);
     let mut groups = Vec::new();
     for obj in &objects {
-        if let (Some(name), Some(id)) = (json::extract_string(obj, "name"), json::extract_string(obj, "id")) {
+        if let (Some(name), Some(id)) = (
+            json::extract_string(obj, "name"),
+            json::extract_string(obj, "id"),
+        ) {
             let internal_id = json::extract_string(obj, "internal_id").unwrap_or_default();
-            groups.push(Group { name, id, internal_id });
+            groups.push(Group {
+                name,
+                id,
+                internal_id,
+            });
         }
     }
     groups
@@ -85,7 +100,15 @@ pub fn parse_messages(body: &str, bot_id: &str) -> Vec<Message> {
         let group_id = json::extract_string(envelope_obj, "groupId");
         let mentions_bot = has_bot_mention(envelope_obj, bot_id);
         let quote = extract_quote(envelope_obj);
-        messages.push(Message { sender, sender_name, text, timestamp, group_id, mentions_bot, quote });
+        messages.push(Message {
+            sender,
+            sender_name,
+            text,
+            timestamp,
+            group_id,
+            mentions_bot,
+            quote,
+        });
     }
     messages
 }
@@ -130,12 +153,12 @@ fn extract_quote(envelope_json: &str) -> Option<Quote> {
     let mut end = 0;
     let mut in_string = false;
     let mut escape_next = false;
-    for i in 0..bytes.len() {
+    for (i, &b) in bytes.iter().enumerate() {
         if escape_next {
             escape_next = false;
             continue;
         }
-        match bytes[i] {
+        match b {
             b'\\' if in_string => escape_next = true,
             b'"' => in_string = !in_string,
             b'{' if !in_string => depth += 1,
@@ -275,13 +298,21 @@ pub fn send_message(
 }
 
 /// Send a typing indicator to a group or DM recipient.
-pub fn send_typing_indicator(host: &str, port: u16, phone: &str, recipient: &str) -> Result<(), String> {
+pub fn send_typing_indicator(
+    host: &str,
+    port: u16,
+    phone: &str,
+    recipient: &str,
+) -> Result<(), String> {
     let path = format!("/v1/typing-indicator/{}", phone);
     let json_body = format!(r#"{{"recipient":"{}"}}"#, json::escape(recipient));
     let (status, body) = http::http_put(host, port, &path, &json_body)?;
 
     if status != 200 && status != 201 && status != 204 {
-        return Err(format!("Typing indicator failed (HTTP {}): {}", status, body));
+        return Err(format!(
+            "Typing indicator failed (HTTP {}): {}",
+            status, body
+        ));
     }
 
     Ok(())

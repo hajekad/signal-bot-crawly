@@ -1,7 +1,7 @@
-/// ChaCha20 stream cipher (RFC 8439) — pure Rust, zero dependencies.
-///
-/// Used to encrypt the bot's minimal state file at rest.
-/// Key is derived from the Open WebUI API key at runtime.
+//! ChaCha20 stream cipher (RFC 8439) — pure Rust, zero dependencies.
+//!
+//! Used to encrypt the bot's minimal state file at rest.
+//! Key is derived from the Open WebUI API key at runtime.
 
 /// ChaCha20 quarter round operation.
 fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
@@ -26,7 +26,10 @@ fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) 
 fn chacha20_block(key: &[u8; 32], nonce: &[u8; 12], counter: u32) -> [u8; 64] {
     // "expand 32-byte k" constant
     let mut state: [u32; 16] = [
-        0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
+        0x61707865,
+        0x3320646e,
+        0x79622d32,
+        0x6b206574,
         u32::from_le_bytes([key[0], key[1], key[2], key[3]]),
         u32::from_le_bytes([key[4], key[5], key[6], key[7]]),
         u32::from_le_bytes([key[8], key[9], key[10], key[11]]),
@@ -98,7 +101,7 @@ fn derive_key(secret: &[u8]) -> [u8; 32] {
     for (i, &byte) in secret.iter().enumerate() {
         key[i % 32] ^= byte;
         // Rotate to spread entropy
-        key[i % 32] = key[i % 32].wrapping_add(byte).rotate_left(3) as u8;
+        key[i % 32] = key[i % 32].wrapping_add(byte).rotate_left(3);
     }
 
     // Run ChaCha20 on the mixed key to produce a well-distributed key
@@ -230,14 +233,12 @@ mod tests {
     #[test]
     fn test_chacha20_block_rfc_vector() {
         let key: [u8; 32] = [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
         ];
         let nonce: [u8; 12] = [
-            0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a,
-            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00,
         ];
         let block = chacha20_block(&key, &nonce, 1);
 

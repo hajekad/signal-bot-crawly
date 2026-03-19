@@ -17,7 +17,8 @@ pub fn chat(
         json::escape(user_message),
     );
 
-    let (status, body) = http::http_post_with_auth(host, port, "/ollama/api/chat", &json_body, Some(api_key))?;
+    let (status, body) =
+        http::http_post_with_auth(host, port, "/ollama/api/chat", &json_body, Some(api_key))?;
 
     if status != 200 {
         return Err(format!("Chat failed (HTTP {}): {}", status, body));
@@ -28,19 +29,18 @@ pub fn chat(
 }
 
 /// Search the web via Open WebUI's SearXNG integration.
-pub fn web_search(
-    host: &str,
-    port: u16,
-    api_key: &str,
-    query: &str,
-) -> Result<String, String> {
+pub fn web_search(host: &str, port: u16, api_key: &str, query: &str) -> Result<String, String> {
     let json_body = format!(
         r#"{{"queries":["{}"],"collection_name":""}}"#,
         json::escape(query),
     );
 
     let (status, body) = http::http_post_with_auth(
-        host, port, "/api/v1/retrieval/process/web/search", &json_body, Some(api_key),
+        host,
+        port,
+        "/api/v1/retrieval/process/web/search",
+        &json_body,
+        Some(api_key),
     )?;
 
     if status != 200 {
@@ -65,11 +65,18 @@ pub fn generate_image(
     );
 
     let (status, body) = http::http_post_with_auth(
-        host, port, "/api/v1/images/generations", &json_body, Some(api_key),
+        host,
+        port,
+        "/api/v1/images/generations",
+        &json_body,
+        Some(api_key),
     )?;
 
     if status != 200 {
-        return Err(format!("Image generation failed (HTTP {}): {}", status, body));
+        return Err(format!(
+            "Image generation failed (HTTP {}): {}",
+            status, body
+        ));
     }
 
     // Response contains an array of image objects with "url" fields
@@ -90,8 +97,8 @@ pub fn download_image(
     use std::time::Duration;
 
     let addr = format!("{}:{}", host, port);
-    let mut stream = TcpStream::connect(&addr)
-        .map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
+    let mut stream =
+        TcpStream::connect(&addr).map_err(|e| format!("Failed to connect to {}: {}", addr, e))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| e.to_string())?;
@@ -111,8 +118,10 @@ pub fn download_image(
         match stream.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => response.extend_from_slice(&buf[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 if start.elapsed().unwrap_or_default().as_secs() >= 120 {
                     return Err("Image download timed out".to_string());
                 }
@@ -143,10 +152,9 @@ pub fn download_image(
     }
 
     let body = &response[sep_pos + 4..];
-    let is_chunked = headers
-        .lines()
-        .any(|l| l.to_lowercase().starts_with("transfer-encoding:")
-             && l.to_lowercase().contains("chunked"));
+    let is_chunked = headers.lines().any(|l| {
+        l.to_lowercase().starts_with("transfer-encoding:") && l.to_lowercase().contains("chunked")
+    });
 
     if is_chunked {
         http::decode_chunked(body)
@@ -157,11 +165,7 @@ pub fn download_image(
 
 /// List available models from Open WebUI.
 /// Returns a list of (id, name) pairs, filtering out embedding models.
-pub fn list_models(
-    host: &str,
-    port: u16,
-    api_key: &str,
-) -> Result<Vec<String>, String> {
+pub fn list_models(host: &str, port: u16, api_key: &str) -> Result<Vec<String>, String> {
     let (status, body) = http::http_get_with_auth(host, port, "/api/models", api_key)?;
 
     if status != 200 {
@@ -170,7 +174,9 @@ pub fn list_models(
 
     // Response: {"data": [{"id": "model-name", ...}, ...]}
     // Find the "data" array
-    let data_start = body.find("\"data\"").ok_or("No data field in models response")?;
+    let data_start = body
+        .find("\"data\"")
+        .ok_or("No data field in models response")?;
     let after_data = &body[data_start..];
     let arr_start = after_data.find('[').ok_or("No array in models response")?;
     let arr_body = &after_data[arr_start..];
@@ -203,7 +209,9 @@ fn format_search_results(body: &str) -> Result<String, String> {
             let items = json::extract_array_objects(arr_body);
 
             for (i, item) in items.iter().enumerate() {
-                if i >= 5 { break; }
+                if i >= 5 {
+                    break;
+                }
                 let title = json::extract_string(item, "title").unwrap_or_default();
                 let snippet = json::extract_string(item, "snippet").unwrap_or_default();
                 let link = json::extract_string(item, "link").unwrap_or_default();
@@ -260,8 +268,13 @@ mod tests {
     fn test_format_search_results_limits_to_5() {
         let mut items = String::new();
         for i in 0..10 {
-            if i > 0 { items.push(','); }
-            items.push_str(&format!(r#"{{"link":"https://x.com/{}","title":"Result {}","snippet":"Snippet {}"}}"#, i, i, i));
+            if i > 0 {
+                items.push(',');
+            }
+            items.push_str(&format!(
+                r#"{{"link":"https://x.com/{}","title":"Result {}","snippet":"Snippet {}"}}"#,
+                i, i, i
+            ));
         }
         let body = format!(r#"{{"status":true,"items":[{}]}}"#, items);
         let result = format_search_results(&body).unwrap();
