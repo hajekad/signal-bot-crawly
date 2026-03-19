@@ -298,6 +298,7 @@ fn main() {
                 Command::Summarize => {
                     let model = group_models.get(target_id).unwrap_or(&config.model);
                     if let Some(stored) = store.remove(target_id) {
+                        send_typing(&config, send_id);
                         println!("Triggered summarization for '{}'", context_name);
                         summarize_and_send(&config, send_id, context_name, &stored, model, &archive);
                     } else {
@@ -312,15 +313,18 @@ fn main() {
                 }
                 Command::Search(query) => {
                     let model = group_models.get(target_id).unwrap_or(&config.model);
+                    send_typing(&config, send_id);
                     println!("Search requested in '{}': {}", context_name, query);
                     handle_search(&config, send_id, query, model);
                 }
                 Command::Imagine(prompt) => {
+                    send_typing(&config, send_id);
                     println!("Image gen requested in '{}': {}", context_name, prompt);
                     handle_imagine(&config, send_id, prompt);
                 }
                 Command::FactCheck { claim, ref quote } => {
                     let model = group_models.get(target_id).unwrap_or(&config.model);
+                    send_typing(&config, send_id);
                     let chain = build_reply_chain(quote, &archive, 50);
                     println!("Fact-check requested in '{}' (chain: {} msgs): {}", context_name, chain.len(), claim);
                     handle_fact_check(&config, send_id, &chain, model);
@@ -349,6 +353,7 @@ fn main() {
         // Handle DM chats — reply with LLM
         for (sender, text, _msg) in &dm_chats {
             println!("DM from '{}': {}", sender, text);
+            send_typing(&config, sender);
             let model = group_models.get(sender).unwrap_or(&config.model);
             match webui::chat(
                 &config.webui_host,
@@ -509,6 +514,18 @@ fn strip_command_prefix(lower: &str, original: &str, prefix: &str) -> Option<Str
         }
     } else {
         None
+    }
+}
+
+/// Fire a typing indicator (fire-and-forget — failures are logged but never block).
+fn send_typing(config: &config::Config, recipient: &str) {
+    if let Err(e) = signal::send_typing_indicator(
+        &config.signal_api_host,
+        config.signal_api_port,
+        &config.signal_phone,
+        recipient,
+    ) {
+        eprintln!("Typing indicator failed: {}", e);
     }
 }
 

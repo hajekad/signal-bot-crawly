@@ -240,6 +240,19 @@ pub fn send_message(
     Ok(())
 }
 
+/// Send a typing indicator to a group or DM recipient.
+pub fn send_typing_indicator(host: &str, port: u16, phone: &str, recipient: &str) -> Result<(), String> {
+    let path = format!("/v1/typing-indicator/{}", phone);
+    let json_body = format!(r#"{{"recipient":"{}"}}"#, json::escape(recipient));
+    let (status, body) = http::http_put(host, port, &path, &json_body)?;
+
+    if status != 200 && status != 201 && status != 204 {
+        return Err(format!("Typing indicator failed (HTTP {}): {}", status, body));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
