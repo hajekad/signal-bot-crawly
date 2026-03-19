@@ -356,7 +356,7 @@ fn main() {
                 config.webui_port,
                 &config.webui_api_key,
                 model,
-                "You are a helpful assistant in a private Signal chat. Be concise and friendly.",
+                &config.dm_prompt,
                 text,
             ) {
                 Ok(reply) => {
@@ -627,7 +627,7 @@ fn handle_search(config: &config::Config, group_id: &str, query: &str, model: &s
         config.webui_port,
         &config.webui_api_key,
         model,
-        "You are a helpful assistant. Summarize web search results into a clear, concise answer. Include relevant links when available.",
+        &config.search_prompt,
         &prompt,
     ) {
         Ok(a) => a,
@@ -776,8 +776,7 @@ fn handle_fact_check(config: &config::Config, group_id: &str, chain: &[String], 
         config.webui_port,
         &config.webui_api_key,
         model,
-        "You are a concise fact-checker. Analyze every verifiable claim in a conversation. \
-         Give a short verdict for each. Skip opinions and reactions. Cite sources when available.",
+        &config.fact_check_prompt,
         &prompt,
     ) {
         Ok(a) => a,
