@@ -245,4 +245,4 @@ cargo build --release
 
 ## License
 
-MIT
+[AGPLv3](LICENSE)
