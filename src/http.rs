@@ -335,6 +335,45 @@ mod tests {
     }
 
     #[test]
+    fn test_chunked_multibyte_utf8() {
+        // "héllo" is 6 bytes: h(1) é(2) l(1) l(1) o(1)
+        // Build as bytes to avoid Rust string literal restrictions
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nh");
+        raw.extend_from_slice(&[0xC3, 0xA9]); // é
+        raw.extend_from_slice(b"llo\r\n0\r\n\r\n");
+        let (status, body) = parse_http_response_bytes(&raw).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, "héllo");
+    }
+
+    #[test]
+    fn test_chunked_multibyte_split_across_chunks() {
+        // Split "héllo wörld" across two chunks
+        // "héllo " = 7 bytes, "wörld" = 6 bytes
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n7\r\nh");
+        raw.extend_from_slice(&[0xC3, 0xA9]); // é
+        raw.extend_from_slice(b"llo \r\n6\r\nw");
+        raw.extend_from_slice(&[0xC3, 0xB6]); // ö
+        raw.extend_from_slice(b"rld\r\n0\r\n\r\n");
+        let (status, body) = parse_http_response_bytes(&raw).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, "héllo wörld");
+    }
+
+    #[test]
+    fn test_parse_http_response_bytes_direct() {
+        // Test with raw bytes containing multi-byte UTF-8
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"HTTP/1.1 200 OK\r\n\r\n");
+        raw.extend_from_slice(&[0xC3, 0xA9, 0xC3, 0xB6]); // éö
+        let (status, body) = parse_http_response_bytes(&raw).unwrap();
+        assert_eq!(status, 200);
+        assert_eq!(body, "éö");
+    }
+
+    #[test]
     fn test_multiline_body() {
         let raw = "HTTP/1.1 200 OK\r\n\r\nline1\nline2\nline3";
         let (status, body) = parse_http_response(raw).unwrap();

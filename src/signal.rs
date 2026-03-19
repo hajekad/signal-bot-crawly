@@ -682,6 +682,35 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_messages_with_quote_containing_braces() {
+        let body = r#"[
+            {
+                "envelope": {
+                    "source": "+1987654321",
+                    "sourceName": "Bob",
+                    "timestamp": 1612041800000,
+                    "dataMessage": {
+                        "timestamp": 1612041800000,
+                        "message": "What does that mean?",
+                        "quote": {
+                            "id": 1612041718367,
+                            "authorNumber": "+1555000111",
+                            "text": "use {key} syntax for templates like {name}"
+                        },
+                        "groupInfo": {"groupId": "group.abc123", "type": "DELIVER"}
+                    }
+                }
+            }
+        ]"#;
+
+        let messages = parse_messages(body, "+0000000000");
+        assert_eq!(messages.len(), 1);
+        let quote = messages[0].quote.as_ref().unwrap();
+        assert_eq!(quote.text, "use {key} syntax for templates like {name}");
+        assert_eq!(quote.author, "+1555000111");
+    }
+
+    #[test]
     fn test_build_send_body_basic() {
         let body = build_send_body("+1234567890", "group.abc123", "Hello world");
         assert!(body.contains(r#""message":"Hello world""#));

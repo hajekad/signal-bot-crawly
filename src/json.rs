@@ -360,6 +360,44 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_string_key_not_substring_match() {
+        // "id" must not match "groupId"
+        let json = r#"{"groupId": "group.abc123", "id": "standalone-id"}"#;
+        assert_eq!(extract_string(json, "id"), Some("standalone-id".to_string()));
+    }
+
+    #[test]
+    fn test_extract_number_key_not_substring_match() {
+        // "id" must not match "parentId"
+        let json = r#"{"parentId": 999, "id": 42}"#;
+        assert_eq!(extract_number(json, "id"), Some(42));
+    }
+
+    #[test]
+    fn test_extract_string_surrogate_pair_emoji() {
+        // \uD83D\uDE00 = U+1F600 grinning face
+        let json = r#"{"emoji": "\uD83D\uDE00"}"#;
+        let result = extract_string(json, "emoji").unwrap();
+        assert_eq!(result, "\u{1F600}");
+    }
+
+    #[test]
+    fn test_extract_string_surrogate_pair_mixed() {
+        // Mix of surrogate pair emoji and normal text
+        let json = r#"{"msg": "Hello \uD83D\uDE00 world"}"#;
+        let result = extract_string(json, "msg").unwrap();
+        assert_eq!(result, "Hello \u{1F600} world");
+    }
+
+    #[test]
+    fn test_extract_string_surrogate_pair_multiple() {
+        // Two surrogate pair emojis back to back
+        let json = r#"{"msg": "\uD83D\uDE00\uD83D\uDE01"}"#;
+        let result = extract_string(json, "msg").unwrap();
+        assert_eq!(result, "\u{1F600}\u{1F601}");
+    }
+
+    #[test]
     fn test_full_ollama_response() {
         let json = r#"{"model":"llama3.2","message":{"role":"assistant","content":"Here is the summary:\n\u2022 Alice proposed a meeting\n\u2022 Bob confirmed availability"},"done":true,"done_reason":"stop","total_duration":2145000000,"eval_count":67,"eval_duration":1850000000}"#;
 
