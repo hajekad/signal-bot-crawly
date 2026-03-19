@@ -178,7 +178,7 @@ impl Config {
                 .to_string()
         });
 
-        let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gpt-oss:20b".to_string());
+        let model = env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3-coder:30b".to_string());
 
         let poll_interval = match env::var("POLL_INTERVAL") {
             Ok(val) => val
