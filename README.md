@@ -10,6 +10,10 @@
 
 ---
 
+## Status
+
+Running in a private group since March 2026. Deployed via the included `Dockerfile`.
+
 ## Overview
 
 Signal Bot Crawly is a self-hosted Signal messenger bot written in pure Rust with **zero external crate dependencies**. It acts as middleware between Signal and [Open WebUI](https://github.com/open-webui/open-webui), giving your group chats access to LLM summarization, web search (via SearXNG), and image generation (via ComfyUI) — all running locally on your own hardware.
@@ -49,6 +53,29 @@ Signal Bot Crawly is a self-hosted Signal messenger bot written in pure Rust wit
 ```
 
 The bot polls Signal for messages every 30 seconds, detects `@mention` commands, routes them through Open WebUI's API, and sends results back. All communication uses plain HTTP over localhost — no TLS needed.
+
+## Boundaries and trade-offs
+
+The "zero dependencies" choice is the project's defining property. It also draws a sharp line around what this codebase is and isn't suited for. Read this before deploying somewhere it doesn't fit.
+
+- **HTTP is plaintext-only.** `src/http.rs` speaks HTTP/1.1 over a raw `TcpStream`. There is no TLS, no certificate validation, no proxy support. This is designed for talking to services on `localhost` or a trusted private network (e.g. a Docker network shared with Open WebUI and signal-cli-rest-api). Do not point it at a public endpoint.
+- **The JSON reader is a key-extractor scanner, not a full parser.** `src/json.rs` walks the byte stream to pull out specific keys; it does not build an AST or validate structure. It is correct for the well-formed responses Open WebUI and signal-cli-rest-api emit on a trusted localhost connection. It is not hardened against an adversarial counterparty crafting malicious payloads. If you ever expose the bot to an untrusted server, this is the first thing that would need replacing.
+- **At-rest encryption is unauthenticated.** `src/crypto.rs` is ChaCha20 only — no Poly1305, no MAC, no AEAD. The state file (group→model mappings) is encrypted for confidentiality against casual disk access, but a bit-flip in the ciphertext is undetectable and will silently corrupt decrypted output. This is a known limitation, not a bug to fix in a patch release; treat the state file's integrity as a property of filesystem permissions, not of the cipher.
+- **Polling cadence is 30 seconds.** Not real-time. Replies arrive on the next tick. This is set by `POLL_INTERVAL` (default `10`s in current builds; the loop coalesces with the scheduler so user-perceived latency is up to one cycle).
+
+These are deliberate. Removing any of them would mean adding a dependency, which would defeat the project's defining property. If your deployment can't tolerate one of them, this isn't the right project to fork — pick a bot built on `reqwest` + `serde_json` + `ring` instead.
+
+## What's interesting here
+
+Most of the value of reading this codebase is in the hand-rolled protocol layer. Concrete entry points:
+
+- **`src/http.rs`** (~421 lines) — HTTP/1.1 client over `TcpStream`. Handles `Content-Length` and chunked transfer encoding, including the awkward case of a multi-byte UTF-8 codepoint split across a chunk boundary. Bearer auth, basic retry on transient errors. No keep-alive — one request, one connection.
+- **`src/json.rs`** (~437 lines) — Key-extractor JSON reader. Pulls strings, numbers, arrays, and nested objects by key path. Handles escape sequences and nested structures correctly enough for the shapes Open WebUI and signal-cli-rest-api return. See "Boundaries" above for what it isn't.
+- **`src/crypto.rs`** (~265 lines) — ChaCha20 stream cipher per RFC 8439, used for encrypting the at-rest state file. Pure Rust, no `unsafe`. Does not include Poly1305.
+- **`src/scheduler.rs`** (~313 lines) — Cron-like scheduler with calendar math (UTC, leap years, month lengths). Drives the daily/weekly/monthly summary cadence.
+- **`src/base64.rs`** (~49 lines) — Base64 encoder for image attachment payloads.
+
+Everything else (`signal.rs`, `webui.rs`, `main.rs`) is application logic on top of those primitives.
 
 ## Commands
 
@@ -207,10 +234,13 @@ signal-bot-crawly/
 │   ├── main.rs             # Event loop, command routing, orchestration
 │   ├── config.rs           # Environment variable configuration
 │   ├── http.rs             # Pure TcpStream HTTP/1.1 client (GET/POST, chunked, auth)
-│   ├── json.rs             # Hand-written JSON parser and serializer
+│   ├── json.rs             # Hand-written key-extractor JSON reader
 │   ├── signal.rs           # Signal API client (groups, messages, mentions, attachments)
 │   ├── webui.rs            # Open WebUI client (chat, search, image gen, model listing)
 │   ├── scheduler.rs        # Cron-like scheduling with UTC date math
+│   ├── crypto.rs           # ChaCha20 (RFC 8439) for at-rest state encryption
+│   ├── store.rs            # Encrypted key-value store (group → model mappings)
+│   ├── memory.rs           # Ephemeral conversation sessions (DM chat, stay mode)
 │   └── base64.rs           # Base64 encoder for image attachments
 └── tests/
     └── integration.rs      # Integration tests (requires running Ollama)

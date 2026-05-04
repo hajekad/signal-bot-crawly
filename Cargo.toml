@@ -2,6 +2,10 @@
 name = "signal-bot-crawly"
 version = "0.1.0"
 edition = "2021"
+description = "Self-hosted Signal bot bridging group chats with Open WebUI for LLM summaries, web search, and image generation. Pure Rust, zero external crate dependencies."
+license = "AGPL-3.0-only"
+repository = "https://github.com/hajekad/signal-bot-crawly"
+readme = "README.md"
 
 [dependencies]
 

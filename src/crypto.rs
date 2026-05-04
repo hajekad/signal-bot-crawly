@@ -77,14 +77,13 @@ fn chacha20_block(key: &[u8; 32], nonce: &[u8; 12], counter: u32) -> [u8; 64] {
 /// Encrypt or decrypt data using ChaCha20 (symmetric — same operation for both).
 fn chacha20_xor(key: &[u8; 32], nonce: &[u8; 12], data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len());
-    let mut counter: u32 = 1; // RFC 8439 starts at 1
 
-    for chunk in data.chunks(64) {
+    // RFC 8439 starts the block counter at 1.
+    for (counter, chunk) in (1_u32..).zip(data.chunks(64)) {
         let keystream = chacha20_block(key, nonce, counter);
         for (i, &byte) in chunk.iter().enumerate() {
             output.push(byte ^ keystream[i]);
         }
-        counter += 1;
     }
 
     output
